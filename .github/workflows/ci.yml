@@ -77,9 +77,14 @@ jobs:
             test "$minos" = "11.0"
           done
 
+      # Native release binary: status, analyze, clean --dry-run, monitor, report.
+      - name: Smoke test
+        run: sh scripts/smoke.sh target/release/macclean
+
       - name: Test x86_64 under Rosetta 2
         if: matrix.arch == 'arm64'
         run: |
           arch -x86_64 /usr/bin/true 2>/dev/null \
             || softwareupdate --install-rosetta --agree-to-license
           cargo test --target x86_64-apple-darwin
+          arch -x86_64 sh scripts/smoke.sh target/x86_64-apple-darwin/release/macclean
