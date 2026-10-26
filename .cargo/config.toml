@@ -1,0 +1,5 @@
+# Minimum macOS version embedded in binaries (LC_BUILD_VERSION minos).
+# 11.0 (Big Sur) is the first release that runs on Apple Silicon and is the
+# floor chosen for both architectures. See README "Compatibility".
+[env]
+MACOSX_DEPLOYMENT_TARGET = "11.0"
