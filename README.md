@@ -28,11 +28,18 @@ The planned work, its priorities and goals are in [ROADMAP.md](ROADMAP.md).
 
 ## Compatibility
 
-| | Status |
-|---|---|
-| Apple Silicon (`aarch64-apple-darwin`) | Built and tested on macOS 27.0.1 (build 26A434), Apple M3 |
-| Intel (`x86_64-apple-darwin`) | **Tested under Rosetta 2 only.** The release binary (Mach-O x86_64, `minos 11.0`, system libraries only) passes the full test suite and an interactive cleanup run as x86_64 code under Rosetta 2 on the M3, with macOS 27.0.1. **It has not run on Intel hardware.** Rosetta does not prove behavior on Intel CPUs or older macOS releases. |
-| Minimum macOS | Binaries are built with `MACOSX_DEPLOYMENT_TARGET=11.0` (Big Sur), and the Mach-O `minos` is checked to be 11.0. **Only macOS 27.0.1 has been tested.** Running on 11–26 is expected but not verified. |
+Only the combinations below have a recorded test run. CI runs the full test suite and `scripts/smoke.sh` (every command, `clean` as a dry run) on each pull request.
+
+| Hardware | macOS | How it was tested |
+|---|---|---|
+| Apple Silicon (Apple M3) | 27.0.1 (26A434) | By hand: test suite, smoke test, interactive cleanup in a real terminal |
+| Apple Silicon (Apple M1, virtual) | 15.7 | CI (`macos-15` runner): test suite and smoke test |
+| Intel (Core i7-8700B) | 15.7 | CI (`macos-15-intel` runner, a VM on Intel Mac hardware): native x86_64 test suite and smoke test |
+| x86_64 binary under Rosetta 2 | 27.0.1 and 15.7 | By hand on the M3, and in CI on the `macos-15` runner: test suite and smoke test |
+
+**Supported minimum: macOS 15 (Sequoia).** Binaries are still built with `MACOSX_DEPLOYMENT_TARGET=11.0` and CI checks that the Mach-O `minos` is 11.0, so macOS 11–14 will load them. Nothing has been tested there, so treat 11–14 as unsupported until someone records a run (run `sh scripts/smoke.sh` and the test suite, then open an issue with the output).
+
+Interactive cleanup (`clean --interactive`) has only been run by hand on the M3. CI runs `clean` as a dry run only.
 
 The binary links only system libraries (libSystem, CoreFoundation, IOKit, libiconv). It does not depend on a particular Mac model or home directory path. Under Rosetta, `status` reports that the binary is translated.
 
@@ -68,6 +75,12 @@ A successful cross-compile does **not** prove the binary runs correctly on that 
 
 ```bash
 cargo test --target x86_64-apple-darwin
+```
+
+To smoke-test a built binary on a given Mac (read-only, deletes nothing):
+
+```bash
+sh scripts/smoke.sh target/release/macclean
 ```
 
 ### Uninstall
