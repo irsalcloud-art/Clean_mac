@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same floor as .cargo/config.toml; set here too so it is visible in the logs.
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Apple Silicon (macos-15, arm64)
+            os: macos-15
+            arch: arm64
+          # macos-15-intel is the last x86_64 image GitHub publishes
+          # (supported until August 2027). Real Intel hardware, not Rosetta.
+          - name: Intel (macos-15-intel, x86_64)
+            os: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal -c rustfmt,clippy
+          rustup default stable
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Report runner
+        run: |
+          echo "uname -m: $(uname -m)"
+          sw_vers
+          sysctl -n machdep.cpu.brand_string
+          rustc -vV
+
+      - name: Check native architecture
+        run: test "$(uname -m)" = "${{ matrix.arch }}"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.arch }}-cargo-
+
+      # fmt, clippy, tests and release builds for both targets.
+      - name: Run scripts/check.sh
+        run: sh scripts/check.sh
+
+      - name: Check minos 11.0 in release binaries
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            bin="target/$target/release/macclean"
+            file "$bin"
+            minos=$(otool -l "$bin" | awk '/LC_BUILD_VERSION/ {f=1} f && $1 == "minos" {print $2; exit}')
+            echo "$target minos: $minos"
+            test "$minos" = "11.0"
+          done
+
+      - name: Test x86_64 under Rosetta 2
+        if: matrix.arch == 'arm64'
+        run: |
+          arch -x86_64 /usr/bin/true 2>/dev/null \
+            || softwareupdate --install-rosetta --agree-to-license
+          cargo test --target x86_64-apple-darwin
