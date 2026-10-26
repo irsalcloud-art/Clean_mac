@@ -1,0 +1,41 @@
+name: Bug report
+description: MacClean did something wrong or crashed
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If MacClean deleted, or planned to delete, something outside its cache allowlist, **stop here** and use [private vulnerability reporting](https://github.com/irsalcloud-art/Clean_mac/security/advisories/new) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and output
+      description: The exact command and its full output. Remove personal paths if you need to.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: "`macclean status` output"
+      description: Shows the MacClean version, macOS version and architecture.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: exit
+    attributes:
+      label: Exit code
+      description: "Run `echo $?` right after the command."
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Ideally a script that builds the needed files inside a temporary directory.
