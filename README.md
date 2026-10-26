@@ -24,6 +24,8 @@ MacClean needs no administrator rights. It never runs `sudo` and never follows s
 | Custom Xcode DerivedData location | Not supported (it is refused) |
 | Arbitrary path deletion | Deliberately not supported |
 
+The planned work, its priorities and goals are in [ROADMAP.md](ROADMAP.md).
+
 ## Compatibility
 
 | | Status |
