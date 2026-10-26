@@ -1,5 +1,8 @@
 # MacClean
 
+[![CI](https://github.com/irsalcloud-art/Clean_mac/actions/workflows/ci.yml/badge.svg)](https://github.com/irsalcloud-art/Clean_mac/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 MacClean is a small command-line tool for macOS with three jobs:
 
 1. **Storage analyzer**: finds the largest files and directories under the paths you choose. It only reads.
@@ -253,4 +256,21 @@ Memory stays flat as the tree grows, because the scanner keeps only the top-N re
 
 * The development shell named in the brief (Rush) was not installed in the build environment. All commands were run with zsh and Cargo, and `scripts/check.sh` is plain POSIX `sh`. MacClean does not need Rush at runtime.
 * Dependencies: `clap` (CLI), `serde`/`serde_json` (JSON), `sysinfo` (CPU/memory/process metrics, `system` feature only), `thiserror` (errors), `libc` (`openat`/`fstatat`/`unlinkat`/`statfs`/`sysctl`), and `tempfile` (tests only).
-* Modules: `cli`, `scanner`, `cleaner`, `policy`, `monitor`, `platform` (with `platform::fsops`), `report`, `errors`.
+* Modules: `cli`, `scanner`, `cleaner`, `policy`, `monitor`, `platform` (with `platform::fsops`), `report`, `errors`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how they fit together.
+
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first, especially the rules for code that deletes files. New cleanup categories follow [docs/ADDING_A_CATEGORY.md](docs/ADDING_A_CATEGORY.md). Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
+
+Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report security vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in a public issue.
+
+## License
+
+Licensed under either of
+
+* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+* MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

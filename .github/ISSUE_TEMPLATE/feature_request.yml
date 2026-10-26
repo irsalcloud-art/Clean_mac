@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest a new feature or cleanup category
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check [ROADMAP.md](https://github.com/irsalcloud-art/Clean_mac/blob/main/ROADMAP.md) first, it may already be planned. A new cleanup category must meet the requirements in [docs/ADDING_A_CATEGORY.md](https://github.com/irsalcloud-art/Clean_mac/blob/main/docs/ADDING_A_CATEGORY.md).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and why is it hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: category
+    attributes:
+      label: For a new cleanup category
+      description: Location, how its path is found, exactly which entries are safe to delete, how the tool rebuilds them, and when cleaning must be refused (for example, while the tool is running).

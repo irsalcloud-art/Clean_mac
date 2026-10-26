@@ -1,0 +1,31 @@
+# Changelog
+
+All notable changes to MacClean are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the version is 0.x, minor releases may change behavior.
+
+## [Unreleased]
+
+### Added
+- GitHub Actions CI on an Apple Silicon (`macos-15`) and an Intel (`macos-15-intel`) runner: formatting, clippy, tests, and release builds for both architectures. It also checks `minos 11.0` and runs the x86_64 tests under Rosetta 2 ([#1](https://github.com/irsalcloud-art/Clean_mac/issues/1), [#17](https://github.com/irsalcloud-art/Clean_mac/pull/17)).
+- `scripts/smoke.sh`: a read-only smoke test of every command, run in CI on both architectures ([#2](https://github.com/irsalcloud-art/Clean_mac/issues/2), [#18](https://github.com/irsalcloud-art/Clean_mac/pull/18)).
+- Open-source project files: dual MIT/Apache-2.0 license, contributing guide, code of conduct, security policy, issue and pull request templates, and architecture docs.
+
+### Changed
+- The supported minimum is now documented as macOS 15. Binaries still target macOS 11.0, but macOS 11–14 have no recorded test run ([#2](https://github.com/irsalcloud-art/Clean_mac/issues/2)).
+- The README compatibility table lists only hardware and macOS versions with a recorded test run.
+
+## [0.1.0] - 2026-10-26
+
+First version.
+
+### Added
+- `status`: macOS version, architecture (including Rosetta 2 detection), memory, disk and uptime.
+- `analyze`: the largest files and directories under the given paths, by allocated or logical size. It is read-only, stays on one filesystem by default and never follows symbolic links.
+- `clean`: a dry-run cleanup plan for `npm-cache` and `xcode-derived-data`. With `--interactive`, it deletes only after you type `yes` at a terminal, after revalidating every candidate, without following symlinks.
+- `monitor`: CPU, memory, disk and top processes, in text or NDJSON.
+- `report`: status, cleanup plan and an optional analysis in one report.
+- Text and JSON output for every command, and documented exit codes 0–5.
+
+[Unreleased]: https://github.com/irsalcloud-art/Clean_mac/compare/e7a562c...HEAD
+[0.1.0]: https://github.com/irsalcloud-art/Clean_mac/commit/e7a562c

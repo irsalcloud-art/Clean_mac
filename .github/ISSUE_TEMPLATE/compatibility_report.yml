@@ -1,0 +1,44 @@
+name: Compatibility report
+description: Record a test run on a Mac or macOS version not yet listed in the README
+labels: ["area: compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks! Reports for **macOS 11–14** and **physical Intel Macs** are especially wanted. Both commands below are read-only and delete nothing.
+  - type: input
+    id: mac
+    attributes:
+      label: Mac model and chip
+      placeholder: MacBook Pro 2019, Intel Core i7
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version (`sw_vers`)
+      placeholder: 12.7.6 (21H1320)
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: MacClean commit or version
+      description: "`git rev-parse --short HEAD`, or `macclean --version`"
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: "`cargo test` result"
+      description: The `test result:` lines, or the full output if something failed.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: smoke
+    attributes:
+      label: "`sh scripts/smoke.sh target/release/macclean` output"
+      render: text
+    validations:
+      required: true
