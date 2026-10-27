@@ -234,6 +234,7 @@ fn differently_spelled_protected_folders_are_refused() {
             pip_running: Some(false),
             brew_running: Some(false),
             gradle_running: Some(false),
+            pod_running: Some(false),
             derived_data: DerivedDataSetting::Given(PrefValue::Missing),
         };
         let plan = cleaner::plan(&[CategoryId::NpmCache], &ctx);
@@ -390,6 +391,7 @@ impl StressFixture {
             pip_running: Some(false),
             brew_running: Some(false),
             gradle_running: Some(false),
+            pod_running: Some(false),
             derived_data: DerivedDataSetting::Given(PrefValue::Missing),
         }
     }

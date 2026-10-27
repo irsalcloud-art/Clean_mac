@@ -111,6 +111,20 @@ impl Fixture {
         f.file(".gradle/daemon/9.6.1/daemon-1.out.log", 30);
         f.file(".gradle/wrapper/dists/gradle-9.6.1-bin/x/gradle.zip", 80);
         f.file(".gradle/gradle.properties", 20);
+        // CocoaPods cache, as CocoaPods' Downloader::Cache writes it.
+        let cp = "Library/Caches/CocoaPods";
+        f.file(&format!("{cp}/Pods/VERSION"), 6);
+        f.file(
+            &format!("{cp}/Pods/Release/Alamofire/5.9.1-a1b2c/Source/AF.swift"),
+            3000,
+        );
+        f.file(
+            &format!("{cp}/Pods/Specs/Release/Alamofire/5.9.podspec.json"),
+            800,
+        );
+        f.file(&format!("{cp}/Pods/External/MyLib/0123abcd/lib.m"), 200);
+        f.file(&format!("{cp}/search_index.json"), 70);
+        f.file(".cocoapods/repos/trunk/Specs/x.json", 25);
         f
     }
 
@@ -134,6 +148,7 @@ impl Fixture {
             pip_running: Some(false),
             brew_running: Some(false),
             gradle_running: Some(false),
+            pod_running: Some(false),
             derived_data: DerivedDataSetting::Given(PrefValue::Missing),
         }
     }
@@ -163,6 +178,8 @@ impl Fixture {
             ".gradle/daemon/9.6.1/daemon-1.out.log",
             ".gradle/wrapper/dists/gradle-9.6.1-bin/x/gradle.zip",
             ".gradle/gradle.properties",
+            "Library/Caches/CocoaPods/search_index.json",
+            ".cocoapods/repos/trunk/Specs/x.json",
         ] {
             assert!(self.p(rel).exists(), "{rel} must not be deleted");
         }
@@ -428,6 +445,9 @@ fn symlinked_category_roots_are_refused() {
     fs::rename(f.p(".gradle/caches"), f.p("gradle-elsewhere")).unwrap();
     symlink(f.p("gradle-elsewhere"), f.p(".gradle/caches")).unwrap();
 
+    fs::rename(f.p("Library/Caches/CocoaPods"), f.p("pods-elsewhere")).unwrap();
+    symlink(f.p("pods-elsewhere"), f.p("Library/Caches/CocoaPods")).unwrap();
+
     let plan = f.plan(&CategoryId::ALL);
     for c in &plan.categories {
         assert_eq!(c.state, CategoryState::Refused, "{:?}", c.category);
@@ -665,6 +685,7 @@ fn missing_categories_are_reported_not_present() {
         pip_running: Some(false),
         brew_running: Some(false),
         gradle_running: Some(false),
+        pod_running: Some(false),
         derived_data: DerivedDataSetting::Given(PrefValue::Missing),
     };
     let plan = cleaner::plan(&CategoryId::ALL, &ctx);
@@ -1142,4 +1163,92 @@ fn gradle_cache_links_never_reach_their_targets() {
     assert!(f.p("elsewhere-8.0/keep").exists());
     assert_eq!(fs::read(f.p("Documents/important.txt")).unwrap().len(), 44);
     f.assert_survivors();
+}
+
+fn pods(outcome: &CleanOutcome) -> &cleaner::CategoryOutcome {
+    outcome
+        .categories
+        .iter()
+        .find(|c| c.category == CategoryId::CocoapodsCache)
+        .unwrap()
+}
+
+#[test]
+fn cocoapods_cache_deletes_only_the_pods_folder() {
+    let f = Fixture::new();
+    let root = f.p("Library/Caches/CocoaPods");
+    let (files, bytes) = allocated_under(&root.join("Pods"));
+    let plan = f.plan(&[CategoryId::CocoapodsCache]);
+    let c = &plan.categories[0];
+    assert_eq!(c.state, CategoryState::Ready, "{c:#?}");
+    let names: Vec<_> = c.candidates.iter().map(|c| c.path.clone()).collect();
+    assert_eq!(names, vec![root.join("Pods")]);
+    assert_eq!(c.estimate.files, files);
+    assert_eq!(c.estimate.allocated_bytes, bytes);
+    assert_eq!(c.estimate.logical_bytes, 6 + 3000 + 800 + 200);
+    assert_eq!(c.not_eligible.len(), 1);
+    assert_eq!(c.not_eligible[0].path, root.join("search_index.json"));
+
+    let out = cleaner::execute(&plan, &f.ctx());
+    assert!(!out.is_partial(), "{out:#?}");
+    assert_eq!(pods(&out).removed.logical_bytes, 4006);
+    assert!(!root.join("Pods").exists());
+    assert!(root.is_dir());
+    f.assert_survivors();
+}
+
+#[test]
+fn pod_running_refuses_cocoapods_cache() {
+    let f = Fixture::new();
+    let mut ctx = f.ctx();
+    ctx.pod_running = Some(true);
+    let plan = cleaner::plan(&[CategoryId::CocoapodsCache], &ctx);
+    assert_eq!(plan.categories[0].state, CategoryState::Refused);
+    let plan = f.plan(&[CategoryId::CocoapodsCache]);
+    let out = cleaner::execute(&plan, &ctx);
+    assert!(pods(&out).refused.is_some());
+    assert!(f.p("Library/Caches/CocoaPods/Pods/VERSION").exists());
+    f.assert_survivors();
+}
+
+#[test]
+fn unrecognized_cocoapods_layout_is_refused() {
+    let f = Fixture::new();
+    fs::remove_dir_all(f.p("Library/Caches/CocoaPods/Pods")).unwrap();
+    f.file("Library/Caches/CocoaPods/photos/cat.jpg", 100);
+    let plan = f.plan(&[CategoryId::CocoapodsCache]);
+    assert_eq!(plan.categories[0].state, CategoryState::Refused);
+    cleaner::execute(&plan, &f.ctx());
+    assert!(f.p("Library/Caches/CocoaPods/photos/cat.jpg").exists());
+    f.assert_survivors();
+}
+
+#[test]
+fn cocoapods_cache_links_never_reach_their_targets() {
+    let f = Fixture::new();
+    let pods_dir = f.p("Library/Caches/CocoaPods/Pods");
+    symlink(f.p("Documents"), pods_dir.join("Release/docs-link")).unwrap();
+    fs::hard_link(
+        f.p("Documents/important.txt"),
+        pods_dir.join("External/hardlink"),
+    )
+    .unwrap();
+    let plan = f.plan(&[CategoryId::CocoapodsCache]);
+    let out = cleaner::execute(&plan, &f.ctx());
+    let p = pods(&out);
+    assert_eq!(p.removed.symlinks, 1);
+    assert!(pods_dir.join("External/hardlink").exists());
+    assert!(!pods_dir.join("Release").exists());
+    assert_eq!(fs::read(f.p("Documents/important.txt")).unwrap().len(), 44);
+    f.assert_survivors();
+
+    // A symlinked Pods folder is forbidden, not followed.
+    let f = Fixture::new();
+    let pods_dir = f.p("Library/Caches/CocoaPods/Pods");
+    fs::rename(&pods_dir, f.p("pods-real")).unwrap();
+    symlink(f.p("pods-real"), &pods_dir).unwrap();
+    let plan = f.plan(&[CategoryId::CocoapodsCache]);
+    assert!(plan.categories[0].candidates.is_empty());
+    cleaner::execute(&plan, &f.ctx());
+    assert!(f.p("pods-real/VERSION").exists());
 }

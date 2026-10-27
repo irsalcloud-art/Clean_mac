@@ -41,15 +41,18 @@ pub enum CategoryId {
     HomebrewCache,
     /// Gradle's dependency and build caches in `~/.gradle/caches`.
     GradleCache,
+    /// CocoaPods' downloaded pods and specs in `~/Library/Caches/CocoaPods/Pods`.
+    CocoapodsCache,
 }
 
 impl CategoryId {
-    pub const ALL: [CategoryId; 5] = [
+    pub const ALL: [CategoryId; 6] = [
         CategoryId::NpmCache,
         CategoryId::XcodeDerivedData,
         CategoryId::PipCache,
         CategoryId::HomebrewCache,
         CategoryId::GradleCache,
+        CategoryId::CocoapodsCache,
     ];
 
     pub fn name(self) -> &'static str {
@@ -59,6 +62,7 @@ impl CategoryId {
             CategoryId::PipCache => "pip-cache",
             CategoryId::HomebrewCache => "homebrew-cache",
             CategoryId::GradleCache => "gradle-cache",
+            CategoryId::CocoapodsCache => "cocoapods-cache",
         }
     }
 
@@ -94,6 +98,12 @@ impl CategoryId {
                  dependencies again on the next build, which needs network access. Daemon \
                  logs, JDKs, wrapper distributions and settings are not touched. Refused \
                  while any Gradle daemon or build is running."
+            }
+            CategoryId::CocoapodsCache => {
+                "CocoaPods' cache of downloaded pods and podspecs \
+                 (~/Library/Caches/CocoaPods/Pods). CocoaPods downloads them again on the \
+                 next `pod install`; equivalent to `pod cache clean --all`. The search index, \
+                 spec repos and other entries are not touched. Refused while pod is running."
             }
         }
     }
@@ -190,6 +200,8 @@ pub struct CleanContext {
     pub brew_running: Option<bool>,
     /// `None` means detect running Gradle daemons and builds.
     pub gradle_running: Option<bool>,
+    /// `None` means detect running CocoaPods (`pod`) processes.
+    pub pod_running: Option<bool>,
     pub derived_data: DerivedDataSetting,
 }
 
@@ -209,6 +221,7 @@ impl CleanContext {
             pip_running: test_package_manager_override(),
             brew_running: test_package_manager_override(),
             gradle_running: test_package_manager_override(),
+            pod_running: test_package_manager_override(),
             derived_data: DerivedDataSetting::ReadPreferences,
         })
     }
@@ -569,6 +582,47 @@ fn running_gradle() -> Option<String> {
     running_processes(is_gradle_process)
 }
 
+/// True when a process is CocoaPods: `pod` is a Ruby script, run as
+/// `ruby …/bin/pod install`, through a shell wrapper (Homebrew's), or
+/// inside Bundler as `ruby …/bin/bundle exec pod install`.
+fn is_pod_process(name: &OsStr, cmd: &[OsString]) -> bool {
+    let interpreter = Path::new(name)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|n| n.starts_with("ruby") || matches!(n, "bash" | "sh" | "zsh"));
+    if !interpreter {
+        return false;
+    }
+    let args: Vec<String> = cmd
+        .iter()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let base = |a: &str| {
+        Path::new(a)
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let Some(pos) = args.iter().position(|a| !a.starts_with('-')) else {
+        return false;
+    };
+    match base(&args[pos]).as_str() {
+        "pod" => true,
+        "bundle" | "bundler" => args[pos + 1..]
+            .windows(2)
+            .next()
+            .is_some_and(|w| w[0] == "exec" && base(&w[1]) == "pod"),
+        _ => false,
+    }
+}
+
+/// Describes the running CocoaPods processes, if any.
+fn running_pod() -> Option<String> {
+    running_processes(is_pod_process)
+}
+
 /// Describes the running npm, npx, yarn or pnpm processes, if any.
 fn running_package_manager() -> Option<String> {
     running_processes(is_package_manager_process)
@@ -849,7 +903,77 @@ fn resolve_root(id: CategoryId, ctx: &CleanContext) -> Resolution {
                 other => other,
             }
         }
+        CategoryId::CocoapodsCache => {
+            let running = match ctx.pod_running {
+                Some(true) => Some("a pod process".to_string()),
+                Some(false) => None,
+                None => running_pod(),
+            };
+            if let Some(what) = running {
+                return Resolution::Refused(format!(
+                    "CocoaPods is running ({what}); wait for it to finish before cleaning its \
+                     cache"
+                ));
+            }
+            let notes = cocoapods_cache_settings(&ctx.home, |k| {
+                std::env::var_os(k).map(|v| v.to_string_lossy().into_owned())
+            });
+            let expected = ctx.home.join("Library/Caches/CocoaPods");
+            match finish_resolution(
+                expected.clone(),
+                "CocoaPods default location".into(),
+                &ctx.home,
+            ) {
+                Resolution::Root { path, .. } if path != expected => Resolution::Refused(format!(
+                    "{} resolves to {}; a CocoaPods cache reached through a symbolic link is \
+                     not supported",
+                    expected.display(),
+                    path.display()
+                )),
+                Resolution::Root { path, source, .. } => Resolution::Root {
+                    path,
+                    source,
+                    notes,
+                },
+                other => other,
+            }
+        }
     }
+}
+
+/// Other cache locations CocoaPods may be configured with: `CP_CACHE_DIR`,
+/// `CP_HOME_DIR` (the cache becomes `$CP_HOME_DIR/cache`) and `cache_root`
+/// in its `config.yaml`. Each one found becomes a note; MacClean does not
+/// follow them.
+fn cocoapods_cache_settings(home: &Path, env: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let note = |what: String| format!("{what}; MacClean cleans only ~/Library/Caches/CocoaPods");
+    let mut notes = Vec::new();
+    if let Some(v) = env("CP_CACHE_DIR").filter(|v| !v.is_empty()) {
+        notes.push(note(format!(
+            "$CP_CACHE_DIR sets CocoaPods' cache to `{v}`"
+        )));
+    }
+    let cp_home = env("CP_HOME_DIR").filter(|v| !v.is_empty());
+    if let Some(v) = &cp_home {
+        notes.push(note(format!(
+            "$CP_HOME_DIR moves CocoaPods' cache to `{v}/cache`"
+        )));
+    }
+    let config = cp_home
+        .map(|v| PathBuf::from(v).join("config.yaml"))
+        .unwrap_or_else(|| home.join(".cocoapods/config.yaml"));
+    if let Ok(text) = std::fs::read_to_string(&config) {
+        for line in text.lines() {
+            if let Some(v) = line.trim().strip_prefix("cache_root:") {
+                let v = v.trim().trim_matches(|c| c == '"' || c == '\'');
+                notes.push(note(format!(
+                    "{} sets CocoaPods' cache to `{v}`",
+                    config.display()
+                )));
+            }
+        }
+    }
+    notes
 }
 
 /// Other Gradle user homes Gradle may be configured with: `GRADLE_USER_HOME`,
@@ -988,6 +1112,8 @@ const PIP_ENTRIES: [&str; 3] = ["http", "http-v2", "wheels"];
 const HOMEBREW_ENTRIES: [&str; 1] = ["downloads"];
 /// Entries every Gradle user home's `caches` has; one of them must exist.
 const GRADLE_SIGNATURE: [&str; 3] = ["modules-2", "journal-1", "CACHEDIR.TAG"];
+/// The folder `pod cache clean --all` deletes.
+const COCOAPODS_ENTRIES: [&str; 1] = ["Pods"];
 const XCODE_CACHE_DIRS: [&str; 3] = [
     "ModuleCache.noindex",
     "SymbolCache.noindex",
@@ -1039,6 +1165,13 @@ fn classify(id: CategoryId, name: &OsStr, meta: &Meta, uid: u32) -> Verdict {
                 Verdict::safe(format!("pip cache `{name}` directory"))
             } else {
                 Verdict::review("not part of pip's cache layout; left untouched")
+            }
+        }
+        CategoryId::CocoapodsCache => {
+            if meta.kind == FileKind::Dir && COCOAPODS_ENTRIES.contains(&name) {
+                Verdict::safe("CocoaPods download cache (pods and podspecs)")
+            } else {
+                Verdict::review("not CocoaPods' download cache; left untouched")
             }
         }
         CategoryId::GradleCache => {
@@ -1315,6 +1448,7 @@ fn plan_category(id: CategoryId, ctx: &CleanContext, cutoff_ns: i128) -> Categor
         CategoryId::PipCache => &PIP_ENTRIES,
         CategoryId::HomebrewCache => &HOMEBREW_ENTRIES,
         CategoryId::GradleCache => &GRADLE_SIGNATURE,
+        CategoryId::CocoapodsCache => &COCOAPODS_ENTRIES,
         CategoryId::XcodeDerivedData => &[],
     };
     if !signature.is_empty() && !names.iter().any(|n| signature.iter().any(|s| n == s)) {
@@ -1587,6 +1721,73 @@ mod tests {
         );
         assert!(jvm.starts_with("java … "), "{jvm}");
         assert!(jvm.ends_with("GradleDaemon 9.6.1"), "{jvm}");
+    }
+
+    #[test]
+    fn pod_processes_and_settings() {
+        let is_pod = |name: &str, cmd: &[&str]| {
+            let cmd: Vec<OsString> = cmd.iter().map(OsString::from).collect();
+            is_pod_process(OsStr::new(name), &cmd)
+        };
+        assert!(is_pod("ruby", &["ruby", "/usr/local/bin/pod", "install"]));
+        assert!(is_pod(
+            "ruby",
+            &[
+                "/opt/homebrew/opt/ruby/bin/ruby",
+                "-W0",
+                "/x/libexec/bin/pod",
+                "update"
+            ]
+        ));
+        assert!(is_pod(
+            "bash",
+            &["/bin/bash", "/opt/homebrew/bin/pod", "install"]
+        ));
+        assert!(is_pod(
+            "ruby",
+            &["ruby", "/x/bin/bundle", "exec", "pod", "install"]
+        ));
+        assert!(is_pod(
+            "ruby3.3",
+            &["ruby3.3", "/x/bin/pod", "repo", "update"]
+        ));
+
+        assert!(!is_pod("ruby", &["ruby", "/x/bin/bundle", "install"]));
+        assert!(!is_pod("ruby", &["ruby", "/x/bin/bundle", "exec", "rake"]));
+        assert!(!is_pod("ruby", &["ruby", "podcast.rb"]));
+        assert!(!is_pod("node", &["node", "pod"]));
+        assert!(!is_pod("vim", &["vim", "pod"]));
+
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path();
+        std::fs::create_dir_all(home.join(".cocoapods")).unwrap();
+        std::fs::write(
+            home.join(".cocoapods/config.yaml"),
+            "---\ncache_root: /from/config\n",
+        )
+        .unwrap();
+        let notes = cocoapods_cache_settings(home, |k| {
+            (k == "CP_CACHE_DIR").then(|| "/from/env".to_string())
+        });
+        assert!(notes.iter().any(|n| n.contains("/from/env")), "{notes:?}");
+        assert!(
+            notes.iter().any(|n| n.contains("/from/config")),
+            "{notes:?}"
+        );
+        let cp_home = home.join("cphome");
+        std::fs::create_dir_all(&cp_home).unwrap();
+        std::fs::write(cp_home.join("config.yaml"), "cache_root: '/from/cphome'\n").unwrap();
+        let cp = cp_home.display().to_string();
+        let notes = cocoapods_cache_settings(home, |k| (k == "CP_HOME_DIR").then(|| cp.clone()));
+        assert!(notes.iter().any(|n| n.contains("/cache`")), "{notes:?}");
+        assert!(
+            notes.iter().any(|n| n.contains("/from/cphome")),
+            "{notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.contains("/from/config")),
+            "{notes:?}"
+        );
     }
 
     #[test]
