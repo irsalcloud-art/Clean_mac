@@ -12,3 +12,4 @@ pub mod platform;
 pub mod policy;
 pub mod report;
 pub mod scanner;
+pub mod tui;

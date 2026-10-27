@@ -115,6 +115,10 @@ pub struct MonitorArgs {
     /// Output format. JSON emits one object per line per sample.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     pub format: OutputFormat,
+    /// Full-screen live view that updates in place until you press q. Needs
+    /// a terminal; keys c, m and f change the ranking.
+    #[arg(long, conflicts_with_all = ["count", "format"])]
+    pub tui: bool,
 }
 
 #[derive(Debug, Args)]
@@ -230,6 +234,18 @@ fn run_clean(args: CleanArgs, out: &mut dyn Write) -> Result<u8> {
 }
 
 fn run_monitor(args: MonitorArgs, out: &mut dyn Write) -> Result<u8> {
+    if args.tui {
+        if !(platform::stdin_is_tty() && platform::stdout_is_tty()) {
+            return Err(MacCleanError::InvalidArgument(
+                "--tui needs an interactive terminal; use --count 0 or --format json for scripts"
+                    .into(),
+            ));
+        }
+        // Every process is ranked; the screen shows as many as fit.
+        let mut m = Monitor::new(Duration::from_secs(args.interval), usize::MAX, args.sort);
+        crate::tui::run(&mut m, args.sort)?;
+        return Ok(exit::SUCCESS);
+    }
     let mut m = Monitor::new(
         Duration::from_secs(args.interval),
         usize::from(args.top),

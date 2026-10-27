@@ -104,6 +104,9 @@ fn invalid_arguments_exit_with_usage_code() {
         vec!["analyze", "--exclude", ""],
         vec!["analyze", "--max-depth", "-1"],
         vec!["analyze", "--max-depth", "abc"],
+        vec!["monitor", "--tui"],
+        vec!["monitor", "--tui", "--count", "2"],
+        vec!["monitor", "--tui", "--format", "json"],
     ] {
         let o = e.run(&args);
         assert_eq!(code(&o), 2, "{args:?}");

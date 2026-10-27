@@ -21,7 +21,7 @@ MacClean needs no administrator rights. It never runs `sudo` and never follows s
 | `clean --interactive`: confirmed, revalidated deletion | Implemented, tested (including a real-pty run) |
 | `monitor`: snapshot and repeated samples, text/NDJSON | Implemented, tested |
 | `report`: combined status, cleanup plan and optional analysis | Implemented, tested |
-| Full-screen live TUI for `monitor` | Planned |
+| `monitor --tui`: full-screen live view | Implemented, tested (in a pseudo-terminal) |
 | `clean --category pip-cache`: pip's HTTP and wheel caches | Implemented, tested (synthetic cache; no pip cache on the development Mac) |
 | `clean --category homebrew-cache`: Homebrew's downloads | Implemented, tested (synthetic cache, plus a dry run against the development Mac's real cache) |
 | `clean --category gradle-cache`: Gradle's caches | Implemented, tested (synthetic cache, plus a real Gradle 9.6.1 cache cleaned and rebuilt) |
@@ -125,6 +125,7 @@ macclean status [--format text|json]
 macclean analyze [PATHS]... [--top N] [--sort allocated|logical] [--max-depth N] [--exclude GLOB]... [--include-cloud] [--cross-mounts] [--format text|json]
 macclean clean [--category npm-cache|xcode-derived-data|pip-cache|homebrew-cache|gradle-cache]... [--dry-run | --interactive] [--format text|json]
 macclean monitor [--interval SECS] [--count N] [--top N] [--sort cpu|memory|footprint] [--format text|json]
+macclean monitor --tui [--interval SECS] [--sort cpu|memory|footprint]
 macclean report [--path PATH]... [--top N] [--format text|json]
 ```
 
@@ -164,6 +165,10 @@ macclean clean --category npm-cache --interactive
 
 ```bash
 macclean monitor --interval 2 --count 0 --sort footprint
+```
+
+```bash
+macclean monitor --tui
 ```
 
 ```bash
@@ -294,7 +299,8 @@ Filesystem safety is treated as a requirement that blocks a release.
   Neither column adds up to system memory used.
 * Under Rosetta 2, macOS shows a translated process 4 KiB pages while the kernel counts 16 KiB pages. MacClean scales used and available memory by `vm.pagesize` so they match the native build. Without that correction (the `sysinfo` default), both values came out 4x too small.
 * Processes MacClean may not inspect (for example, some owned by root) can show zero usage.
-* The interval must be 1–3600 seconds. MacClean never terminates processes.
+* **`monitor --tui`** shows the same figures full-screen and updates them in place, with as many processes as fit. Keys: `c`, `m` and `f` rank by CPU, RSS or footprint (from the next sample), `q`, Esc or Ctrl-C quit. It needs a terminal: without one it exits with code 2, and `--count` and `--format json` remain for scripts. It uses the terminal directly (alternate screen, `termios`, `poll`) with no extra dependency, and restores the terminal on quit, on errors and on `SIGTERM`/`SIGHUP`. Over 60 s at a 2 s interval on the development Mac it used the same CPU as `--count 0` (0.01–0.02 s, 93 million instructions either way).
+* The interval must be 1–3600 seconds. MacClean never terminates processes, and the live view has no key that acts on a process.
 
 ## Testing
 
@@ -302,7 +308,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 sh scripts/check.sh
 ```
 
-The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (109 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (111 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
 
 * size calculations, directory aggregation, top-N limits, hard links
 * permission failures, files disappearing mid-scan, symlink roots and loops

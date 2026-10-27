@@ -123,11 +123,27 @@ impl Monitor {
     /// Waits one interval, then returns a sample covering it.
     pub fn next_sample(&mut self) -> Sample {
         std::thread::sleep(self.interval);
+        self.sample_now()
+    }
+
+    /// Returns a sample covering the time since the previous one, without
+    /// waiting. The caller must let at least [`Monitor::interval`] pass
+    /// between calls for CPU figures to be meaningful.
+    pub fn sample_now(&mut self) -> Sample {
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
         self.sys
             .refresh_processes_specifics(ProcessesToUpdate::All, true, process_kind());
         self.snapshot()
+    }
+
+    pub fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    /// Changes the ranking used from the next sample on.
+    pub fn set_sort(&mut self, sort: ProcessSort) {
+        self.sort = sort;
     }
 
     fn snapshot(&self) -> Sample {

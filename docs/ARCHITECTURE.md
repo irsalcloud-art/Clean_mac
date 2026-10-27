@@ -23,6 +23,7 @@ main.rs ─► cli ─┬─► scanner ─────────────�
 | `platform` | sysctl, `statfs`, uid, home directory, TTY checks, architecture and Rosetta detection, reading app preferences | No |
 | `platform::fsops` | Descriptor-relative primitives: `open_dir_nofollow`, `open_dir_at`, `stat_at`, `read_dir_names`, `unlink_at`, `rmdir_at` | `unlink_at` and `rmdir_at` only |
 | `monitor` | CPU, memory, disk and process samples (via `sysinfo`), with a correction for the page size under Rosetta | No |
+| `tui` | `monitor --tui`: full-screen view drawn with ANSI sequences, termios and poll(2); restores the terminal on every exit | No |
 | `report` | Human-readable text and JSON output for status, scans, plans, outcomes and samples | No |
 | `errors` | `MacCleanError` and the exit-code table (0 success, 1 error, 2 usage, 3 partial, 4 cancelled, 5 refused) | No |
 
