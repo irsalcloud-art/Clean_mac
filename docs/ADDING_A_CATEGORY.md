@@ -24,7 +24,7 @@ All in `src/cleaner.rs` unless noted:
 1. **`CategoryId`**: add a variant with a doc comment, add it to `CategoryId::ALL`, and add `name()` (kebab-case, which is also the CLI value) and `description()` (what is deleted, how it comes back, and what is never touched).
 2. **`resolve_root`**: return `Resolution::Root`, `NotPresent` or `Refused`. Always finish with `finish_resolution`, which canonicalizes the path and runs `policy::validate_category_root`. If the location is fixed, refuse when it resolves somewhere else, as `XcodeDerivedData` does.
 3. **`classify`**: return `Verdict::safe` only for entries you positively recognize. Everything else gets `Verdict::review`. The ownership and symlink checks at the top of `classify` apply to every category, so keep them first.
-4. **Refusal conditions**: if the tool must not be running, follow `xcode_is_running` and add an injectable override to `CleanContext` (like `xcode_running: Option<bool>`) so tests don't depend on real processes.
+4. **Refusal conditions**: if the tool must not be running, follow `xcode_is_running` and add an injectable override to `CleanContext` (like `xcode_running` or `package_manager_running: Option<bool>`) so tests don't depend on real processes.
 5. **No new deletion code.** Don't add new calls to `unlink_at`, `rmdir_at` or `std::fs::remove_*`. Deletion goes through the existing `Walker`, which already applies every skip rule.
 
 ## 3. Tests (required)

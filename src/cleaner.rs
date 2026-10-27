@@ -47,7 +47,8 @@ impl CategoryId {
             CategoryId::NpmCache => {
                 "npm's content-addressable package cache (_cacache). npm re-downloads \
                  packages on demand; equivalent to `npm cache clean --force`. Logs and \
-                 npx installs are not touched."
+                 npx installs are not touched. Refused while npm, npx, yarn or pnpm is \
+                 running."
             }
             CategoryId::XcodeDerivedData => {
                 "Xcode build products, indexes and module caches. Xcode rebuilds them on \
@@ -74,6 +75,8 @@ pub struct CleanContext {
     pub npm_cache: NpmCacheSource,
     /// `None` means detect running Xcode processes.
     pub xcode_running: Option<bool>,
+    /// `None` means detect running npm, npx, yarn or pnpm processes.
+    pub package_manager_running: Option<bool>,
 }
 
 impl CleanContext {
@@ -88,8 +91,22 @@ impl CleanContext {
             uid: platform::current_uid(),
             npm_cache: NpmCacheSource::Detect,
             xcode_running: None,
+            package_manager_running: test_package_manager_override(),
         })
     }
+}
+
+/// Lets the end-to-end tests run the binary on a machine where a package
+/// manager is busy (for example a long-running `npm exec` server). Only
+/// debug builds read the variable; a release build always checks.
+#[cfg(debug_assertions)]
+fn test_package_manager_override() -> Option<bool> {
+    std::env::var_os("MACCLEAN_TEST_ASSUME_NO_PACKAGE_MANAGER").map(|_| false)
+}
+
+#[cfg(not(debug_assertions))]
+fn test_package_manager_override() -> Option<bool> {
+    None
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -359,6 +376,99 @@ fn xcode_is_running() -> bool {
         .any(|n| sys.processes_by_exact_name(OsStr::new(n)).next().is_some())
 }
 
+/// Entry points of npm, npx, yarn and pnpm, either as a process name
+/// (standalone binaries) or as the script a Node.js process runs
+/// (`node /opt/homebrew/bin/npm`, `node …/npm/bin/npm-cli.js`, corepack's
+/// `…/dist/yarn.js`).
+const PACKAGE_MANAGER_ENTRY_POINTS: [&str; 15] = [
+    "npm",
+    "npx",
+    "npm-cli.js",
+    "npx-cli.js",
+    "yarn",
+    "yarnpkg",
+    "yarn.js",
+    "yarn.cjs",
+    "pnpm",
+    "pnpx",
+    "pnpm.cjs",
+    "pnpm.mjs",
+    "pnpx.cjs",
+    "pnpm.js",
+    "pnpx.js",
+];
+
+/// True when a process with this name and command line is npm, npx, yarn
+/// or pnpm.
+fn is_package_manager_process(name: &OsStr, cmd: &[OsString]) -> bool {
+    let is_entry = |s: &OsStr| {
+        Path::new(s)
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|s| PACKAGE_MANAGER_ENTRY_POINTS.contains(&s))
+    };
+    if is_entry(name) {
+        return true;
+    }
+    // npm and others set `process.title`, which Node.js writes over argv:
+    // `npm install` then shows up as argv[0] "npm install" and no other
+    // arguments.
+    if let Some(first) = cmd.first()
+        && let Some(word) = first.to_string_lossy().split_whitespace().next()
+        && is_entry(OsStr::new(word))
+    {
+        return true;
+    }
+    if !matches!(name.to_str(), Some("node" | "nodejs")) {
+        return false;
+    }
+    // The script is the first argument after node's own options.
+    cmd.iter()
+        .skip(1)
+        .find(|a| !a.to_string_lossy().starts_with('-'))
+        .is_some_and(|script| is_entry(script))
+}
+
+/// How many running package-manager processes a refusal names.
+const MAX_LISTED_PROCESSES: usize = 3;
+
+/// Describes the running npm, npx, yarn or pnpm processes, if any.
+fn running_package_manager() -> Option<String> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+    let mut found: Vec<_> = sys
+        .processes()
+        .iter()
+        .filter(|(_, p)| is_package_manager_process(p.name(), p.cmd()))
+        .map(|(pid, p)| {
+            let title = p
+                .cmd()
+                .first()
+                .map_or_else(|| p.name().to_string_lossy(), |a| a.to_string_lossy());
+            (pid.as_u32(), title.trim().to_string())
+        })
+        .collect();
+    if found.is_empty() {
+        return None;
+    }
+    found.sort();
+    let mut text = found
+        .iter()
+        .take(MAX_LISTED_PROCESSES)
+        .map(|(pid, title)| format!("process {pid} `{title}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if found.len() > MAX_LISTED_PROCESSES {
+        text += &format!(" and {} more", found.len() - MAX_LISTED_PROCESSES);
+    }
+    Some(text)
+}
+
 /// Accepts `root` only when it exists as a real directory (not a symlink)
 /// whose canonical path passes the policy.
 fn finish_resolution(root: PathBuf, source: String, home: &Path) -> Resolution {
@@ -394,6 +504,17 @@ fn finish_resolution(root: PathBuf, source: String, home: &Path) -> Resolution {
 fn resolve_root(id: CategoryId, ctx: &CleanContext) -> Resolution {
     match id {
         CategoryId::NpmCache => {
+            let running = match ctx.package_manager_running {
+                Some(true) => Some("a package manager".to_string()),
+                Some(false) => None,
+                None => running_package_manager(),
+            };
+            if let Some(what) = running {
+                return Resolution::Refused(format!(
+                    "npm, npx, yarn or pnpm is running ({what}); wait for it to finish or \
+                     quit it before cleaning the npm cache"
+                ));
+            }
             let (dir, source) = match &ctx.npm_cache {
                 NpmCacheSource::Explicit(p) => (p.clone(), "configured".to_string()),
                 NpmCacheSource::Detect => {
@@ -977,6 +1098,41 @@ mod tests {
         let (dir, source) = detect_npm_cache_dir(t.path(), |_| None).unwrap();
         assert_eq!(dir, t.path().join("custom-npm"));
         assert!(source.contains(".npmrc"));
+    }
+
+    #[test]
+    fn package_manager_processes() {
+        let is_pm = |name: &str, cmd: &[&str]| {
+            let cmd: Vec<OsString> = cmd.iter().map(OsString::from).collect();
+            is_package_manager_process(OsStr::new(name), &cmd)
+        };
+        assert!(is_pm("node", &["node", "/opt/homebrew/bin/npm", "install"]));
+        assert!(is_pm(
+            "node",
+            &[
+                "node",
+                "--max-old-space-size=4096",
+                "/x/npm/bin/npm-cli.js",
+                "ci"
+            ]
+        ));
+        assert!(is_pm("node", &["node", "/usr/local/bin/npx", "create-app"]));
+        assert!(is_pm("nodejs", &["nodejs", "/x/corepack/dist/yarn.js"]));
+        assert!(is_pm("node", &["node", "/x/pnpm/bin/pnpm.cjs", "add", "a"]));
+        assert!(is_pm("pnpm", &["pnpm", "install"]));
+        assert!(is_pm("yarn", &[]));
+        // process.title rewrites argv: what `ps` shows for a running npm.
+        assert!(is_pm("node", &["npm run wait"]));
+        assert!(is_pm("node", &["npm exec chrome-devtools-mcp@latest", ""]));
+        assert!(is_pm("node", &["pnpm"]));
+
+        assert!(!is_pm("node", &["node", "server.js"]));
+        assert!(!is_pm("node", &["node"]));
+        assert!(!is_pm("node", &["node", "--", "app.js", "npm"]));
+        assert!(!is_pm("vim", &["vim", "npm"]));
+        assert!(!is_pm("npm-check", &["npm-check"]));
+        assert!(!is_pm("zsh", &["/bin/zsh", "-c", "npm install"]));
+        assert!(!is_pm("node", &["node server.js --npm"]));
     }
 
     #[test]

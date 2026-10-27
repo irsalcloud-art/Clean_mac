@@ -177,6 +177,7 @@ Disk "available" comes from `statfs(2)` and excludes APFS purgeable space, so Fi
   3. the default `~/.npm`.
 
   Values that use `${VAR}` expansion, or relative paths, are refused. Project-level and global npmrc files are not read.
+* **When it refuses:** while npm, npx, yarn or pnpm is running. MacClean checks this when it plans and again just before it deletes. It recognizes a process named `npm`, `npx`, `yarn`, `yarnpkg`, `pnpm` or `pnpx`, and a `node` process whose script is one of those or `npm-cli.js`, `npx-cli.js`, `yarn.js`/`yarn.cjs` (including corepack) or `pnpm.cjs`/`pnpm.mjs`. npm renames its own process (`npm install`, `npm exec …`), and that form is recognized too. The refusal names the processes it found. A long-running `npx` or `npm exec` server (an MCP server, for example) also blocks the category until you quit it.
 * **What it never touches:** `_logs`, `_npx`, `_update-notifier-last-checked`, and any entry in `_cacache` it does not recognize. Those are listed as "review". If `_cacache` contains neither `content-v2` nor `index-v5`, the whole category is refused.
 
 ### `xcode-derived-data`
@@ -209,7 +210,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 
 * Descriptor-relative deletion stops redirection through symlinks. It cannot stop a process running as **your own user** from moving a directory MacClean is in the middle of deleting to somewhere else. Such a process could delete those files itself anyway.
 * If a file is swapped for another regular file between the per-file check and the `unlink`, MacClean removes the new directory entry. That entry is still inside the verified cache directory.
-* Detecting whether npm is running is not implemented. Files npm writes after the plan was created are skipped by the change-time rule, but do not run a cleanup while `npm install` is running.
+* The npm-running check looks at process names and command lines. It misses npm started under another name (a renamed binary, a wrapper that is not `node`, Bun) or right after the last check. Files npm writes after the plan was created are still skipped by the change-time rule.
 * npm configuration in project-level or global npmrc files, and a custom Xcode DerivedData location set in Xcode preferences, are not detected.
 * No external security audit has been performed.
 
@@ -227,7 +228,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 sh scripts/check.sh
 ```
 
-The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (60 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (63 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
 
 * size calculations, directory aggregation, top-N limits, hard links
 * permission failures, files disappearing mid-scan, symlink roots and loops
@@ -236,7 +237,7 @@ The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
 * symlinks inside candidates, symlinked candidates and roots, ancestors swapped after planning
 * roots or candidates replaced between plan and execution, files changed or added after planning
 * partial failures from unwritable directories, with accurate byte reporting
-* Xcode running, roots owned by another user, missing categories
+* Xcode or a package manager running (at planning and at execution), recognition of npm/npx/yarn/pnpm processes, roots owned by another user, missing categories
 * CLI argument validation, exit codes, JSON validity, refusal without a TTY (including piped `yes`)
 * the monitor's ranges, sorting and process visibility
 

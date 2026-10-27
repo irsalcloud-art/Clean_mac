@@ -66,6 +66,7 @@ impl Fixture {
             uid: platform::current_uid(),
             npm_cache: NpmCacheSource::Explicit(self.p(".npm")),
             xcode_running: Some(false),
+            package_manager_running: Some(false),
         }
     }
 
@@ -522,6 +523,35 @@ fn xcode_running_refuses_derived_data() {
 }
 
 #[test]
+fn package_manager_running_refuses_npm_cache() {
+    let f = Fixture::new();
+    let mut ctx = f.ctx();
+    ctx.package_manager_running = Some(true);
+    let plan = cleaner::plan(&CategoryId::ALL, &ctx);
+    assert_eq!(plan.categories[0].state, CategoryState::Refused);
+    assert!(plan.categories[0].candidates.is_empty());
+    assert!(
+        plan.categories[0]
+            .state_reason
+            .as_deref()
+            .is_some_and(|r| r.contains("npm"))
+    );
+    // Other categories are unaffected.
+    assert_eq!(plan.categories[1].state, CategoryState::Ready);
+
+    // npm starting between plan and execution is also caught.
+    let plan = f.plan(&[CategoryId::NpmCache]);
+    assert_eq!(plan.categories[0].state, CategoryState::Ready);
+    let out = cleaner::execute(&plan, &ctx);
+    assert!(npm(&out).refused.is_some(), "{out:#?}");
+    assert_eq!(npm(&out).removed.files, 0);
+    assert!(out.is_partial());
+    assert!(f.p(".npm/_cacache/content-v2/sha512/ab/cd/blob1").exists());
+    assert!(f.p(".npm/_cacache/index-v5/12/34/entry").exists());
+    f.assert_survivors();
+}
+
+#[test]
 fn root_owned_by_another_user_is_refused() {
     let f = Fixture::new();
     let mut ctx = f.ctx();
@@ -542,6 +572,7 @@ fn missing_categories_are_reported_not_present() {
         uid: platform::current_uid(),
         npm_cache: NpmCacheSource::Explicit(home.join(".npm")),
         xcode_running: Some(false),
+        package_manager_running: Some(false),
     };
     let plan = cleaner::plan(&CategoryId::ALL, &ctx);
     for c in &plan.categories {

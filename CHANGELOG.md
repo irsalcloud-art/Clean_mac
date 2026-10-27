@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Open-source project files: dual MIT/Apache-2.0 license, contributing guide, code of conduct, security policy, issue and pull request templates, and architecture docs.
 
 ### Changed
+- `clean` refuses the `npm-cache` category while npm, npx, yarn or pnpm is running, both when planning and again just before deleting, so an active `npm install` is not broken ([#3](https://github.com/irsalcloud-art/Clean_mac/issues/3)).
 - The supported minimum is now documented as macOS 15. Binaries still target macOS 11.0, but macOS 11–14 have no recorded test run ([#2](https://github.com/irsalcloud-art/Clean_mac/issues/2)).
 - The README compatibility table lists only hardware and macOS versions with a recorded test run.
 

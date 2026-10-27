@@ -31,7 +31,7 @@ Cleanup is split so that each stage can be checked on its own. Only the last sta
 
 ### 1. Resolve and validate the root
 
-`cleaner::resolve_root` finds each category's root directory. For `npm-cache` it uses environment variables, then the user npmrc, then `~/.npm`. For `xcode-derived-data` it uses the fixed default location, and refuses while Xcode is running. `finish_resolution` refuses a root that is a symlink or not a directory, and canonicalizes it. Then `policy::validate_category_root` checks it:
+`cleaner::resolve_root` finds each category's root directory. For `npm-cache` it refuses while npm, npx, yarn or pnpm is running (`running_package_manager`), then uses environment variables, then the user npmrc, then `~/.npm`. For `xcode-derived-data` it uses the fixed default location, and refuses while Xcode is running. `finish_resolution` refuses a root that is a symlink or not a directory, and canonicalizes it. Then `policy::validate_category_root` checks it:
 
 * it must be an absolute path with no `.` or `..` components
 * it must lie strictly inside the canonical home directory
@@ -78,8 +78,8 @@ The `CleanOutcome` counts only successful removals, and lists every skip and fai
 ## Testing
 
 * **Unit tests** sit next to the code (`#[cfg(test)]` modules) and cover parsing, policy and classification.
-* **`tests/cleaner.rs`** builds a fake home directory in a `tempfile` directory and passes it in through `CleanContext { home, uid, npm_cache: NpmCacheSource::Explicit(..), xcode_running: Some(false) }`. This means no test touches the real home directory. The tests cover the attack and race scenarios listed in the README.
-* **`tests/cli.rs`** runs the compiled binary and checks arguments, exit codes, JSON validity, and the refusal without a TTY.
+* **`tests/cleaner.rs`** builds a fake home directory in a `tempfile` directory and passes it in through `CleanContext { home, uid, npm_cache: NpmCacheSource::Explicit(..), xcode_running: Some(false), package_manager_running: Some(false) }`. This means no test touches the real home directory. The tests cover the attack and race scenarios listed in the README.
+* **`tests/cli.rs`** runs the compiled binary and checks arguments, exit codes, JSON validity, and the refusal without a TTY. It sets `MACCLEAN_TEST_ASSUME_NO_PACKAGE_MANAGER` so a package manager running on the test machine does not refuse the npm-cache fixtures. Only debug builds read that variable. One test unsets it and starts a fake `npm install` process to check the refusal end to end.
 * **`scripts/check.sh`** runs formatting, clippy, the tests and release builds. **`scripts/smoke.sh`** runs every read-only command against a built binary. CI runs both on arm64 and on Intel, and under Rosetta 2 (`.github/workflows/ci.yml`).
 
 ## Build settings
