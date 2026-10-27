@@ -34,15 +34,22 @@ pub enum CategoryId {
     NpmCache,
     /// Xcode build products and indexes in `~/Library/Developer/Xcode/DerivedData`.
     XcodeDerivedData,
+    /// pip's download and wheel cache in `~/Library/Caches/pip`.
+    PipCache,
 }
 
 impl CategoryId {
-    pub const ALL: [CategoryId; 2] = [CategoryId::NpmCache, CategoryId::XcodeDerivedData];
+    pub const ALL: [CategoryId; 3] = [
+        CategoryId::NpmCache,
+        CategoryId::XcodeDerivedData,
+        CategoryId::PipCache,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             CategoryId::NpmCache => "npm-cache",
             CategoryId::XcodeDerivedData => "xcode-derived-data",
+            CategoryId::PipCache => "pip-cache",
         }
     }
 
@@ -58,6 +65,12 @@ impl CategoryId {
                 "Xcode build products, indexes and module caches. Xcode rebuilds them on \
                  the next build, which can take a while. Archives and simulators are not \
                  touched. Refused while Xcode or xcodebuild is running."
+            }
+            CategoryId::PipCache => {
+                "pip's HTTP and locally built wheel caches in ~/Library/Caches/pip. pip \
+                 downloads or builds packages again when it needs them; equivalent to \
+                 `pip cache purge`. Self-check state and unknown entries are not touched. \
+                 Refused while pip is running."
             }
         }
     }
@@ -148,6 +161,8 @@ pub struct CleanContext {
     pub xcode_running: Option<bool>,
     /// `None` means detect running npm, npx, yarn or pnpm processes.
     pub package_manager_running: Option<bool>,
+    /// `None` means detect running pip processes.
+    pub pip_running: Option<bool>,
     pub derived_data: DerivedDataSetting,
 }
 
@@ -164,6 +179,7 @@ impl CleanContext {
             npm_cache: NpmCacheSource::Detect,
             xcode_running: None,
             package_manager_running: test_package_manager_override(),
+            pip_running: test_package_manager_override(),
             derived_data: DerivedDataSetting::ReadPreferences,
         })
     }
@@ -444,8 +460,76 @@ fn is_package_manager_process(name: &OsStr, cmd: &[OsString]) -> bool {
 /// How many running package-manager processes a refusal names.
 const MAX_LISTED_PROCESSES: usize = 3;
 
+/// True when a process with this name and command line is pip: a `pip`,
+/// `pip3` or `pip3.12` script (run by Python, so the script is an argument),
+/// or `python -m pip`.
+fn is_pip_process(name: &OsStr, cmd: &[OsString]) -> bool {
+    let is_pip_name = |s: &OsStr| {
+        Path::new(s)
+            .file_name()
+            .and_then(OsStr::to_str)
+            .and_then(|n| n.strip_prefix("pip"))
+            .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit() || c == '.'))
+    };
+    if is_pip_name(name) {
+        return true;
+    }
+    let is_python = name
+        .to_str()
+        .is_some_and(|n| n.to_ascii_lowercase().starts_with("python"));
+    if !is_python {
+        return false;
+    }
+    let args: Vec<_> = cmd.iter().skip(1).map(|a| a.to_string_lossy()).collect();
+    // `python -m pip …` or `python -mpip …`
+    if args.windows(2).any(|w| w[0] == "-m" && w[1] == "pip") || args.iter().any(|a| a == "-mpip") {
+        return true;
+    }
+    // `python /usr/local/bin/pip3 install …`: the first non-option argument.
+    args.iter()
+        .find(|a| !a.starts_with('-'))
+        .is_some_and(|script| is_pip_name(OsStr::new(script.as_ref())))
+}
+
+/// Describes the running pip processes, if any.
+fn running_pip() -> Option<String> {
+    running_processes(is_pip_process)
+}
+
 /// Describes the running npm, npx, yarn or pnpm processes, if any.
 fn running_package_manager() -> Option<String> {
+    running_processes(is_package_manager_process)
+}
+
+/// A process's command line for a message: the program's file name and
+/// its arguments, joined by spaces (or its name if they are unreadable), at
+/// most 120 characters.
+fn command_line(name: &OsStr, cmd: &[OsString]) -> String {
+    let joined = cmd
+        .iter()
+        .enumerate()
+        .map(|(i, a)| match Path::new(a).file_name() {
+            // argv[0] can be a long interpreter path; its name is enough.
+            Some(file) if i == 0 && a.to_string_lossy().starts_with('/') => file.to_string_lossy(),
+            _ => a.to_string_lossy(),
+        })
+        .filter(|a| !a.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = if joined.trim().is_empty() {
+        name.to_string_lossy().into_owned()
+    } else {
+        joined.trim().to_string()
+    };
+    match text.char_indices().nth(120) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text,
+    }
+}
+
+/// Describes the processes `matches` accepts, if any: up to
+/// `MAX_LISTED_PROCESSES` of them by PID and command line.
+fn running_processes(matches: fn(&OsStr, &[OsString]) -> bool) -> Option<String> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut sys = System::new();
     sys.refresh_processes_specifics(
@@ -456,14 +540,8 @@ fn running_package_manager() -> Option<String> {
     let mut found: Vec<_> = sys
         .processes()
         .iter()
-        .filter(|(_, p)| is_package_manager_process(p.name(), p.cmd()))
-        .map(|(pid, p)| {
-            let title = p
-                .cmd()
-                .first()
-                .map_or_else(|| p.name().to_string_lossy(), |a| a.to_string_lossy());
-            (pid.as_u32(), title.trim().to_string())
-        })
+        .filter(|(_, p)| matches(p.name(), p.cmd()))
+        .map(|(pid, p)| (pid.as_u32(), command_line(p.name(), p.cmd())))
         .collect();
     if found.is_empty() {
         return None;
@@ -584,7 +662,75 @@ fn resolve_root(id: CategoryId, ctx: &CleanContext) -> Resolution {
                 other => other,
             }
         }
+        CategoryId::PipCache => {
+            let running = match ctx.pip_running {
+                Some(true) => Some("a pip process".to_string()),
+                Some(false) => None,
+                None => running_pip(),
+            };
+            if let Some(what) = running {
+                return Resolution::Refused(format!(
+                    "pip is running ({what}); wait for it to finish before cleaning its cache"
+                ));
+            }
+            // Only pip's default location is cleaned. Other cache-dir settings
+            // depend on the Python that runs pip, so they are reported only.
+            let notes = pip_cache_dir_settings(&ctx.home, |k| {
+                std::env::var_os(k).map(|v| v.to_string_lossy().into_owned())
+            });
+            let expected = ctx.home.join("Library/Caches/pip");
+            match finish_resolution(expected.clone(), "pip default location".into(), &ctx.home) {
+                Resolution::Root { path, .. } if path != expected => Resolution::Refused(format!(
+                    "{} resolves to {}; a pip cache reached through a symbolic link is not \
+                     supported",
+                    expected.display(),
+                    path.display()
+                )),
+                Resolution::Root { path, source, .. } => Resolution::Root {
+                    path,
+                    source,
+                    notes,
+                },
+                other => other,
+            }
+        }
     }
+}
+
+/// Other cache locations pip may be configured with: `PIP_CACHE_DIR` and
+/// `cache-dir` in the config files pip reads for every Python (the file in
+/// `PIP_CONFIG_FILE`, the global file, and the user files). Each one found
+/// becomes a note; MacClean does not follow them.
+fn pip_cache_dir_settings(home: &Path, env: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let mut notes = Vec::new();
+    let note = |where_: String, value: &str| {
+        format!("{where_} sets pip's cache to `{value}`; MacClean cleans only ~/Library/Caches/pip")
+    };
+    if let Some(v) = env("PIP_CACHE_DIR").filter(|v| !v.is_empty()) {
+        notes.push(note("$PIP_CACHE_DIR".into(), &v));
+    }
+    let mut files: Vec<PathBuf> = env("PIP_CONFIG_FILE")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .into_iter()
+        .collect();
+    files.extend([
+        PathBuf::from("/Library/Application Support/pip/pip.conf"),
+        home.join(".pip/pip.conf"),
+        home.join(".config/pip/pip.conf"),
+        home.join("Library/Application Support/pip/pip.conf"),
+    ]);
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for key in ["cache-dir", "cache_dir"] {
+            if let Some(v) = npm_config::npmrc_value(&text, key) {
+                notes.push(note(file.display().to_string(), &v));
+            }
+        }
+    }
+    notes
 }
 
 // ---------------------------------------------------------------------------
@@ -592,6 +738,9 @@ fn resolve_root(id: CategoryId, ctx: &CleanContext) -> Resolution {
 // ---------------------------------------------------------------------------
 
 const NPM_ENTRIES: [&str; 3] = ["content-v2", "index-v5", "tmp"];
+/// What `pip cache purge` empties: the HTTP caches (`http-v2` since pip
+/// 23.3, `http` before) and locally built wheels.
+const PIP_ENTRIES: [&str; 3] = ["http", "http-v2", "wheels"];
 const XCODE_CACHE_DIRS: [&str; 3] = [
     "ModuleCache.noindex",
     "SymbolCache.noindex",
@@ -636,6 +785,13 @@ fn classify(id: CategoryId, name: &OsStr, meta: &Meta, uid: u32) -> Verdict {
                 Verdict::safe(format!("build data for Xcode project `{project}`"))
             } else {
                 Verdict::review("not a recognized DerivedData folder; left untouched")
+            }
+        }
+        CategoryId::PipCache => {
+            if meta.kind == FileKind::Dir && PIP_ENTRIES.contains(&name) {
+                Verdict::safe(format!("pip cache `{name}` directory"))
+            } else {
+                Verdict::review("not part of pip's cache layout; left untouched")
             }
         }
     }
@@ -892,17 +1048,27 @@ fn plan_category(id: CategoryId, ctx: &CleanContext, cutoff_ns: i128) -> Categor
     };
     names.sort();
 
-    if id == CategoryId::NpmCache && !names.iter().any(|n| n == "content-v2" || n == "index-v5") {
+    // A root holding none of the tool's own entries is not trusted at all.
+    let signature: &[&str] = match id {
+        CategoryId::NpmCache => &["content-v2", "index-v5"],
+        CategoryId::PipCache => &PIP_ENTRIES,
+        CategoryId::XcodeDerivedData => &[],
+    };
+    if !signature.is_empty() && !names.iter().any(|n| signature.iter().any(|s| n == s)) {
         if !names.is_empty() {
             refuse(
                 &mut plan,
-                format!("{} does not look like an npm cache", root.display()),
+                format!(
+                    "{} does not look like a {} directory",
+                    root.display(),
+                    id.name()
+                ),
             );
             for n in &names {
                 plan.not_eligible.push(ReviewItem {
                     path: root.join(n),
                     risk: Risk::Review,
-                    reason: "npm cache layout not recognized".into(),
+                    reason: format!("{} layout not recognized", id.name()),
                 });
             }
         }
@@ -1124,6 +1290,82 @@ mod tests {
         assert_eq!(
             platform::read_app_preference(XCODE_PREFS_DOMAIN, "MacCleanNoSuchKey-7f3a"),
             PrefValue::Missing
+        );
+    }
+
+    #[test]
+    fn command_lines_for_messages() {
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        assert_eq!(
+            command_line(OsStr::new("node"), &os(&["npm install", "", ""])),
+            "npm install"
+        );
+        assert_eq!(
+            command_line(
+                OsStr::new("Python"),
+                &os(&["/x/Python", "/y/pip3", "install", "z"])
+            ),
+            "Python /y/pip3 install z"
+        );
+        assert_eq!(command_line(OsStr::new("pip"), &[]), "pip");
+        let long = "a".repeat(300);
+        assert_eq!(
+            command_line(OsStr::new("x"), &os(&[&long])).chars().count(),
+            121
+        );
+    }
+
+    #[test]
+    fn pip_processes() {
+        let is_pip = |name: &str, cmd: &[&str]| {
+            let cmd: Vec<OsString> = cmd.iter().map(OsString::from).collect();
+            is_pip_process(OsStr::new(name), &cmd)
+        };
+        assert!(is_pip("python3", &["python3", "-m", "pip", "install", "x"]));
+        assert!(is_pip("Python", &["/usr/bin/python3", "-mpip", "download"]));
+        assert!(is_pip(
+            "python3.12",
+            &["python3.12", "/opt/homebrew/bin/pip3", "install"]
+        ));
+        assert!(is_pip(
+            "python3",
+            &["python3", "-u", "/x/bin/pip3.12", "wheel", "."]
+        ));
+        assert!(is_pip("pip", &["pip", "install"]));
+        assert!(is_pip("pip3", &[]));
+
+        assert!(!is_pip("python3", &["python3", "-m", "pipx", "run"]));
+        assert!(!is_pip("python3", &["python3", "app.py", "pip"]));
+        assert!(!is_pip("python3", &["python3", "/x/pipeline.py"]));
+        assert!(!is_pip("pipx", &["pipx", "install"]));
+        assert!(!is_pip("node", &["node", "pip"]));
+    }
+
+    #[test]
+    fn pip_cache_dir_settings_from_env_and_files() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path();
+        let custom = home.join("custom.conf");
+        std::fs::write(&custom, "[global]\ncache_dir = /from/custom\n").unwrap();
+        std::fs::create_dir_all(home.join(".pip")).unwrap();
+        std::fs::write(
+            home.join(".pip/pip.conf"),
+            "[install]\ncache-dir=/from/legacy\n",
+        )
+        .unwrap();
+        let env = |k: &str| match k {
+            "PIP_CACHE_DIR" => Some("/from/env".to_string()),
+            "PIP_CONFIG_FILE" => Some(custom.display().to_string()),
+            _ => None,
+        };
+        let notes = pip_cache_dir_settings(home, env);
+        for v in ["/from/env", "/from/custom", "/from/legacy"] {
+            assert!(notes.iter().any(|n| n.contains(v)), "{v}: {notes:?}");
+        }
+        assert!(
+            pip_cache_dir_settings(home, |_| None)
+                .iter()
+                .all(|n| !n.contains("/from/env"))
         );
     }
 

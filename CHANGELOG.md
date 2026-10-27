@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- `clean --category pip-cache` removes `http`, `http-v2` and `wheels` from pip's default cache, `~/Library/Caches/pip`, as `pip cache purge` does. It is refused while pip is running or when the folder does not look like a pip cache, keeps `selfcheck` and unknown entries, and reports other `cache-dir` settings without following them ([#13](https://github.com/irsalcloud-art/Clean_mac/issues/13)).
 - `analyze --max-depth N` ranks only directories up to N levels below each path, like `du -d`, while sizes still include everything below. `analyze --exclude GLOB` (repeatable) leaves out matching names or relative paths without entering or counting them, for example `--exclude node_modules` or `--exclude Library/CloudStorage` ([#12](https://github.com/irsalcloud-art/Clean_mac/issues/12)).
 - `monitor` shows each process's physical footprint (Activity Monitor's "Memory" column) next to RSS, and `--sort footprint` ranks by it. Footprint is reported as unavailable for other users' processes ([#11](https://github.com/irsalcloud-art/Clean_mac/issues/11)).
 

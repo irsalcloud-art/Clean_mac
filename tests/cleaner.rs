@@ -48,6 +48,18 @@ impl Fixture {
             "Library/Developer/Xcode/Archives/2026/App.xcarchive/Info.plist",
             77,
         );
+        // pip cache: HTTP and wheel caches, plus state that must survive.
+        f.file("Library/Caches/pip/http-v2/a/b/c/d/e/entry", 800);
+        f.file("Library/Caches/pip/http-v2/a/b/c/d/e/entry.body", 4000);
+        f.file("Library/Caches/pip/http/0/1/old", 300);
+        f.file(
+            "Library/Caches/pip/wheels/ab/cd/ef/pkg-1.0-py3-none-any.whl",
+            1500,
+        );
+        f.file("Library/Caches/pip/wheels/ab/cd/ef/origin.json", 90);
+        f.file("Library/Caches/pip/selfcheck/0123abcd.json", 60);
+        f.file("Library/Caches/pip/notes.txt", 7);
+        f.file("Library/Caches/Other/keep", 8);
         f
     }
 
@@ -68,6 +80,7 @@ impl Fixture {
             npm_cache: NpmCacheSource::Explicit(self.p(".npm")),
             xcode_running: Some(false),
             package_manager_running: Some(false),
+            pip_running: Some(false),
             derived_data: DerivedDataSetting::Given(PrefValue::Missing),
         }
     }
@@ -85,6 +98,9 @@ impl Fixture {
             "Library/Developer/Xcode/DerivedData/SomethingElse/keep",
             "Library/Developer/Xcode/DerivedData/notes.txt",
             "Library/Developer/Xcode/Archives/2026/App.xcarchive/Info.plist",
+            "Library/Caches/pip/selfcheck/0123abcd.json",
+            "Library/Caches/pip/notes.txt",
+            "Library/Caches/Other/keep",
         ] {
             assert!(self.p(rel).exists(), "{rel} must not be deleted");
         }
@@ -341,6 +357,9 @@ fn symlinked_category_roots_are_refused() {
     fs::rename(f.p(".npm/_cacache"), f.p(".npm/_cacache.real")).unwrap();
     symlink(f.p(".npm/_cacache.real"), f.p(".npm/_cacache")).unwrap();
 
+    fs::rename(f.p("Library/Caches/pip"), f.p("pip-elsewhere")).unwrap();
+    symlink(f.p("pip-elsewhere"), f.p("Library/Caches/pip")).unwrap();
+
     let plan = f.plan(&CategoryId::ALL);
     for c in &plan.categories {
         assert_eq!(c.state, CategoryState::Refused, "{:?}", c.category);
@@ -575,6 +594,7 @@ fn missing_categories_are_reported_not_present() {
         npm_cache: NpmCacheSource::Explicit(home.join(".npm")),
         xcode_running: Some(false),
         package_manager_running: Some(false),
+        pip_running: Some(false),
         derived_data: DerivedDataSetting::Given(PrefValue::Missing),
     };
     let plan = cleaner::plan(&CategoryId::ALL, &ctx);
@@ -685,4 +705,149 @@ fn unsafe_custom_derived_data_locations_are_refused() {
         assert!(dir.join(&project).exists(), "{}", dir.display());
     }
     f.assert_survivors();
+}
+
+fn pip(outcome: &CleanOutcome) -> &cleaner::CategoryOutcome {
+    outcome
+        .categories
+        .iter()
+        .find(|c| c.category == CategoryId::PipCache)
+        .unwrap()
+}
+
+#[test]
+fn pip_cache_deletes_only_http_and_wheel_caches() {
+    let f = Fixture::new();
+    let root = f.p("Library/Caches/pip");
+    let (files, bytes) = allocated_under(&root.join("http-v2"));
+    let (files_old, bytes_old) = allocated_under(&root.join("http"));
+    let (files_wh, bytes_wh) = allocated_under(&root.join("wheels"));
+
+    let plan = f.plan(&[CategoryId::PipCache]);
+    let c = &plan.categories[0];
+    assert_eq!(c.state, CategoryState::Ready, "{c:#?}");
+    assert_eq!(c.root.as_deref(), Some(root.as_path()));
+    let names: Vec<_> = c.candidates.iter().map(|c| c.path.clone()).collect();
+    assert_eq!(
+        names,
+        vec![root.join("http"), root.join("http-v2"), root.join("wheels")]
+    );
+    assert_eq!(c.estimate.files, files + files_old + files_wh);
+    assert_eq!(c.estimate.logical_bytes, 800 + 4000 + 300 + 1500 + 90);
+    assert_eq!(c.estimate.allocated_bytes, bytes + bytes_old + bytes_wh);
+    let review: Vec<_> = c.not_eligible.iter().map(|r| r.path.clone()).collect();
+    assert_eq!(review, vec![root.join("notes.txt"), root.join("selfcheck")]);
+    // Planning deleted nothing.
+    assert!(root.join("http-v2/a/b/c/d/e/entry.body").exists());
+
+    let out = cleaner::execute(&plan, &f.ctx());
+    assert!(!out.is_partial(), "{out:#?}");
+    assert_eq!(pip(&out).removed.logical_bytes, 6690);
+    for gone in ["http", "http-v2", "wheels"] {
+        assert!(!root.join(gone).exists(), "{gone}");
+    }
+    assert!(root.is_dir());
+    f.assert_survivors();
+}
+
+#[test]
+fn pip_running_refuses_pip_cache() {
+    let f = Fixture::new();
+    let mut ctx = f.ctx();
+    ctx.pip_running = Some(true);
+    let plan = cleaner::plan(&CategoryId::ALL, &ctx);
+    let c = plan
+        .categories
+        .iter()
+        .find(|c| c.category == CategoryId::PipCache)
+        .unwrap();
+    assert_eq!(c.state, CategoryState::Refused);
+    assert!(
+        c.state_reason
+            .as_deref()
+            .unwrap()
+            .contains("pip is running")
+    );
+    // The other categories are unaffected.
+    assert_eq!(plan.categories[0].state, CategoryState::Ready);
+
+    // pip starting between plan and execution is also caught.
+    let plan = f.plan(&[CategoryId::PipCache]);
+    let out = cleaner::execute(&plan, &ctx);
+    assert!(pip(&out).refused.is_some());
+    assert!(f.p("Library/Caches/pip/http-v2/a/b/c/d/e/entry").exists());
+    f.assert_survivors();
+}
+
+#[test]
+fn unrecognized_pip_layout_is_refused() {
+    let f = Fixture::new();
+    for d in ["http", "http-v2", "wheels"] {
+        fs::remove_dir_all(f.p(&format!("Library/Caches/pip/{d}"))).unwrap();
+    }
+    f.file("Library/Caches/pip/photos/cat.jpg", 100);
+    let plan = f.plan(&[CategoryId::PipCache]);
+    let c = &plan.categories[0];
+    assert_eq!(c.state, CategoryState::Refused);
+    assert!(c.candidates.is_empty());
+    cleaner::execute(&plan, &f.ctx());
+    assert!(f.p("Library/Caches/pip/photos/cat.jpg").exists());
+    f.assert_survivors();
+}
+
+#[test]
+fn pip_cache_links_never_reach_their_targets() {
+    let f = Fixture::new();
+    let root = f.p("Library/Caches/pip");
+    symlink(f.p("Documents"), root.join("http-v2/a/docs-link")).unwrap();
+    symlink(
+        f.p("Documents/important.txt"),
+        root.join("wheels/file-link"),
+    )
+    .unwrap();
+    fs::hard_link(f.p("Documents/important.txt"), root.join("http/0/hardlink")).unwrap();
+    // A symlinked candidate itself is forbidden, not followed.
+    fs::rename(root.join("wheels"), f.p("wheels-real")).unwrap();
+    symlink(f.p("wheels-real"), root.join("wheels")).unwrap();
+
+    let plan = f.plan(&[CategoryId::PipCache]);
+    let c = &plan.categories[0];
+    assert!(c.candidates.iter().all(|c| c.path != root.join("wheels")));
+    assert!(
+        c.not_eligible
+            .iter()
+            .any(|r| r.path == root.join("wheels") && r.risk == macclean::policy::Risk::Forbidden)
+    );
+    let out = cleaner::execute(&plan, &f.ctx());
+    let p = pip(&out);
+    assert_eq!(p.removed.symlinks, 1);
+    // The hard-linked file is skipped and keeps its directory in place.
+    assert!(root.join("http/0/hardlink").exists());
+    assert!(!root.join("http-v2").exists());
+    assert!(root.join("wheels").is_symlink());
+    assert!(f.p("wheels-real/file-link").is_symlink());
+    assert_eq!(fs::read(f.p("Documents/important.txt")).unwrap().len(), 44);
+    f.assert_survivors();
+}
+
+#[test]
+fn pip_cache_dir_settings_are_reported_not_followed() {
+    let f = Fixture::new();
+    f.file(".config/pip/pip.conf", 0);
+    fs::write(
+        f.p(".config/pip/pip.conf"),
+        "[global]\ncache-dir = /Volumes/Ext/pip-cache\n",
+    )
+    .unwrap();
+    let plan = f.plan(&[CategoryId::PipCache]);
+    let c = &plan.categories[0];
+    assert_eq!(c.state, CategoryState::Ready);
+    assert_eq!(c.root.as_deref(), Some(f.p("Library/Caches/pip").as_path()));
+    assert!(
+        c.notes
+            .iter()
+            .any(|n| n.contains("/Volumes/Ext/pip-cache") && n.contains(".config/pip/pip.conf")),
+        "{:?}",
+        c.notes
+    );
 }
