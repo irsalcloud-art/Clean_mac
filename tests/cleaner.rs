@@ -125,6 +125,22 @@ impl Fixture {
         f.file(&format!("{cp}/Pods/External/MyLib/0123abcd/lib.m"), 200);
         f.file(&format!("{cp}/search_index.json"), 70);
         f.file(".cocoapods/repos/trunk/Specs/x.json", 25);
+        // Yarn 1 cache, plus Yarn 2+ and pnpm stores that are out of scope.
+        let y = "Library/Caches/Yarn/v6/npm-lodash-4.17.21-0123abcd-integrity/node_modules/lodash";
+        f.file(&format!("{y}/package.json"), 1500);
+        f.file(&format!("{y}/.yarn-metadata.json"), 900);
+        f.file(&format!("{y}/.yarn-tarball.tgz"), 5000);
+        f.file("Library/Caches/Yarn/v6/.tmp/partial", 10);
+        f.file(
+            "Library/Caches/Yarn/v4/npm-old-1.0.0-ff-integrity/node_modules/old/index.js",
+            300,
+        );
+        f.file("Library/Caches/Yarn/notes.txt", 5);
+        f.file(
+            ".yarn/berry/cache/lodash-npm-4.17.21-6382451519-c08619c108.zip",
+            600,
+        );
+        f.file("Library/pnpm/store/v10/files/00/abcdef", 700);
         f
     }
 
@@ -180,6 +196,9 @@ impl Fixture {
             ".gradle/gradle.properties",
             "Library/Caches/CocoaPods/search_index.json",
             ".cocoapods/repos/trunk/Specs/x.json",
+            "Library/Caches/Yarn/notes.txt",
+            ".yarn/berry/cache/lodash-npm-4.17.21-6382451519-c08619c108.zip",
+            "Library/pnpm/store/v10/files/00/abcdef",
         ] {
             assert!(self.p(rel).exists(), "{rel} must not be deleted");
         }
@@ -447,6 +466,9 @@ fn symlinked_category_roots_are_refused() {
 
     fs::rename(f.p("Library/Caches/CocoaPods"), f.p("pods-elsewhere")).unwrap();
     symlink(f.p("pods-elsewhere"), f.p("Library/Caches/CocoaPods")).unwrap();
+
+    fs::rename(f.p("Library/Caches/Yarn"), f.p("yarn-elsewhere")).unwrap();
+    symlink(f.p("yarn-elsewhere"), f.p("Library/Caches/Yarn")).unwrap();
 
     let plan = f.plan(&CategoryId::ALL);
     for c in &plan.categories {
@@ -1251,4 +1273,75 @@ fn cocoapods_cache_links_never_reach_their_targets() {
     assert!(plan.categories[0].candidates.is_empty());
     cleaner::execute(&plan, &f.ctx());
     assert!(f.p("pods-real/VERSION").exists());
+}
+
+fn yarn(outcome: &CleanOutcome) -> &cleaner::CategoryOutcome {
+    outcome
+        .categories
+        .iter()
+        .find(|c| c.category == CategoryId::YarnCache)
+        .unwrap()
+}
+
+#[test]
+fn yarn_cache_deletes_only_yarn1_cache_folders() {
+    let f = Fixture::new();
+    let root = f.p("Library/Caches/Yarn");
+    let plan = f.plan(&[CategoryId::YarnCache]);
+    let c = &plan.categories[0];
+    assert_eq!(c.state, CategoryState::Ready, "{c:#?}");
+    let names: Vec<_> = c.candidates.iter().map(|c| c.path.clone()).collect();
+    assert_eq!(names, vec![root.join("v4"), root.join("v6")]);
+    assert_eq!(c.estimate.logical_bytes, 1500 + 900 + 5000 + 10 + 300);
+    assert_eq!(c.not_eligible.len(), 1);
+
+    let out = cleaner::execute(&plan, &f.ctx());
+    assert!(!out.is_partial(), "{out:#?}");
+    assert_eq!(yarn(&out).removed.logical_bytes, 7710);
+    assert!(!root.join("v6").exists());
+    assert!(!root.join("v4").exists());
+    // Yarn 2+ and pnpm stores are used by projects directly: untouched.
+    f.assert_survivors();
+}
+
+#[test]
+fn running_package_manager_refuses_yarn_cache() {
+    let f = Fixture::new();
+    let mut ctx = f.ctx();
+    ctx.package_manager_running = Some(true);
+    let plan = cleaner::plan(&[CategoryId::YarnCache], &ctx);
+    assert_eq!(plan.categories[0].state, CategoryState::Refused);
+    let plan = f.plan(&[CategoryId::YarnCache]);
+    let out = cleaner::execute(&plan, &ctx);
+    assert!(yarn(&out).refused.is_some());
+    assert!(f.p("Library/Caches/Yarn/v6/.tmp/partial").exists());
+    f.assert_survivors();
+}
+
+#[test]
+fn unrecognized_yarn_layout_is_refused() {
+    let f = Fixture::new();
+    for v in ["v6", "v4"] {
+        fs::remove_dir_all(f.p(&format!("Library/Caches/Yarn/{v}"))).unwrap();
+    }
+    f.file("Library/Caches/Yarn/photos/cat.jpg", 100);
+    let plan = f.plan(&[CategoryId::YarnCache]);
+    assert_eq!(plan.categories[0].state, CategoryState::Refused);
+    cleaner::execute(&plan, &f.ctx());
+    assert!(f.p("Library/Caches/Yarn/photos/cat.jpg").exists());
+    f.assert_survivors();
+}
+
+#[test]
+fn yarn_cache_links_never_reach_their_targets() {
+    let f = Fixture::new();
+    let v6 = f.p("Library/Caches/Yarn/v6");
+    symlink(f.p("Documents"), v6.join("docs-link")).unwrap();
+    fs::hard_link(f.p("Documents/important.txt"), v6.join(".tmp/hardlink")).unwrap();
+    let plan = f.plan(&[CategoryId::YarnCache]);
+    let out = cleaner::execute(&plan, &f.ctx());
+    assert_eq!(yarn(&out).removed.symlinks, 1);
+    assert!(v6.join(".tmp/hardlink").exists());
+    assert_eq!(fs::read(f.p("Documents/important.txt")).unwrap().len(), 44);
+    f.assert_survivors();
 }

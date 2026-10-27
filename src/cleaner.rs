@@ -43,16 +43,19 @@ pub enum CategoryId {
     GradleCache,
     /// CocoaPods' downloaded pods and specs in `~/Library/Caches/CocoaPods/Pods`.
     CocoapodsCache,
+    /// Yarn 1 (classic) package cache in `~/Library/Caches/Yarn/v<N>`.
+    YarnCache,
 }
 
 impl CategoryId {
-    pub const ALL: [CategoryId; 6] = [
+    pub const ALL: [CategoryId; 7] = [
         CategoryId::NpmCache,
         CategoryId::XcodeDerivedData,
         CategoryId::PipCache,
         CategoryId::HomebrewCache,
         CategoryId::GradleCache,
         CategoryId::CocoapodsCache,
+        CategoryId::YarnCache,
     ];
 
     pub fn name(self) -> &'static str {
@@ -63,6 +66,7 @@ impl CategoryId {
             CategoryId::HomebrewCache => "homebrew-cache",
             CategoryId::GradleCache => "gradle-cache",
             CategoryId::CocoapodsCache => "cocoapods-cache",
+            CategoryId::YarnCache => "yarn-cache",
         }
     }
 
@@ -104,6 +108,12 @@ impl CategoryId {
                  (~/Library/Caches/CocoaPods/Pods). CocoaPods downloads them again on the \
                  next `pod install`; equivalent to `pod cache clean --all`. The search index, \
                  spec repos and other entries are not touched. Refused while pod is running."
+            }
+            CategoryId::YarnCache => {
+                "Yarn 1 (classic) package cache (~/Library/Caches/Yarn/v6 and older v<N>). \
+                 Yarn downloads packages again when it needs them; like `yarn cache clean`. \
+                 Yarn 2+ and pnpm stores are not cleaned because projects use them directly. \
+                 Refused while npm, npx, yarn or pnpm is running."
             }
         }
     }
@@ -938,7 +948,83 @@ fn resolve_root(id: CategoryId, ctx: &CleanContext) -> Resolution {
                 other => other,
             }
         }
+        CategoryId::YarnCache => {
+            let running = match ctx.package_manager_running {
+                Some(true) => Some("a package manager".to_string()),
+                Some(false) => None,
+                None => running_package_manager(),
+            };
+            if let Some(what) = running {
+                return Resolution::Refused(format!(
+                    "npm, npx, yarn or pnpm is running ({what}); wait for it to finish or \
+                     quit it before cleaning the Yarn cache"
+                ));
+            }
+            let notes = yarn_cache_settings(&ctx.home, |k| {
+                std::env::var_os(k).map(|v| v.to_string_lossy().into_owned())
+            });
+            let expected = ctx.home.join("Library/Caches/Yarn");
+            match finish_resolution(
+                expected.clone(),
+                "Yarn 1 default location".into(),
+                &ctx.home,
+            ) {
+                Resolution::Root { path, .. } if path != expected => Resolution::Refused(format!(
+                    "{} resolves to {}; a Yarn cache reached through a symbolic link is not \
+                     supported",
+                    expected.display(),
+                    path.display()
+                )),
+                Resolution::Root { path, source, .. } => Resolution::Root {
+                    path,
+                    source,
+                    notes,
+                },
+                other => other,
+            }
+        }
     }
+}
+
+/// Other cache locations Yarn 1 may be configured with: `YARN_CACHE_FOLDER`,
+/// `XDG_CACHE_HOME` (Yarn then uses `$XDG_CACHE_HOME/yarn`, even on macOS)
+/// and `cache-folder` in `~/.yarnrc`. Each one found becomes a note;
+/// MacClean does not follow them.
+fn yarn_cache_settings(home: &Path, env: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let note = |what: String| format!("{what}; MacClean cleans only ~/Library/Caches/Yarn");
+    let mut notes = Vec::new();
+    for var in ["YARN_CACHE_FOLDER", "yarn_cache_folder"] {
+        if let Some(v) = env(var).filter(|v| !v.is_empty()) {
+            notes.push(note(format!("${var} sets Yarn's cache to `{v}`")));
+        }
+    }
+    if let Some(v) = env("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
+        notes.push(note(format!(
+            "$XDG_CACHE_HOME moves Yarn 1's cache to `{v}/yarn`"
+        )));
+    }
+    if let Ok(text) = std::fs::read_to_string(home.join(".yarnrc")) {
+        for line in text.lines() {
+            let line = line.trim();
+            let rest = line
+                .strip_prefix("--cache-folder")
+                .or_else(|| line.strip_prefix("cache-folder"));
+            if let Some(v) = rest.filter(|r| r.starts_with([' ', '\t', '='])) {
+                let v = v
+                    .trim_start_matches(['=', ' ', '\t'])
+                    .trim()
+                    .trim_matches('"');
+                notes.push(note(format!("~/.yarnrc sets Yarn's cache to `{v}`")));
+            }
+        }
+    }
+    notes
+}
+
+/// Yarn 1's cache folders: `v` and the cache format version (`v6`).
+fn is_yarn_cache_version(name: &str) -> bool {
+    name.strip_prefix('v')
+        .is_some_and(|n| !n.is_empty() && n.len() <= 3 && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Other cache locations CocoaPods may be configured with: `CP_CACHE_DIR`,
@@ -1165,6 +1251,13 @@ fn classify(id: CategoryId, name: &OsStr, meta: &Meta, uid: u32) -> Verdict {
                 Verdict::safe(format!("pip cache `{name}` directory"))
             } else {
                 Verdict::review("not part of pip's cache layout; left untouched")
+            }
+        }
+        CategoryId::YarnCache => {
+            if meta.kind == FileKind::Dir && is_yarn_cache_version(name) {
+                Verdict::safe(format!("Yarn cache format `{name}`"))
+            } else {
+                Verdict::review("not a Yarn cache folder; left untouched")
             }
         }
         CategoryId::CocoapodsCache => {
@@ -1449,9 +1542,15 @@ fn plan_category(id: CategoryId, ctx: &CleanContext, cutoff_ns: i128) -> Categor
         CategoryId::HomebrewCache => &HOMEBREW_ENTRIES,
         CategoryId::GradleCache => &GRADLE_SIGNATURE,
         CategoryId::CocoapodsCache => &COCOAPODS_ENTRIES,
+        CategoryId::YarnCache => &[],
         CategoryId::XcodeDerivedData => &[],
     };
-    if !signature.is_empty() && !names.iter().any(|n| signature.iter().any(|s| n == s)) {
+    let recognized = |n: &OsString| match id {
+        CategoryId::YarnCache => n.to_str().is_some_and(is_yarn_cache_version),
+        _ => signature.iter().any(|s| n == s),
+    };
+    let checks_layout = !signature.is_empty() || id == CategoryId::YarnCache;
+    if checks_layout && !names.iter().any(recognized) {
         if !names.is_empty() {
             refuse(
                 &mut plan,
@@ -1721,6 +1820,34 @@ mod tests {
         );
         assert!(jvm.starts_with("java … "), "{jvm}");
         assert!(jvm.ends_with("GradleDaemon 9.6.1"), "{jvm}");
+    }
+
+    #[test]
+    fn yarn_cache_versions_and_settings() {
+        for ok in ["v6", "v4", "v10"] {
+            assert!(is_yarn_cache_version(ok), "{ok}");
+        }
+        for no in ["v", "6", "v6a", "berry", ".tmp", "v1234", "V6"] {
+            assert!(!is_yarn_cache_version(no), "{no}");
+        }
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path();
+        std::fs::write(
+            home.join(".yarnrc"),
+            "registry \"https://x\"\ncache-folder \"/from/yarnrc\"\n",
+        )
+        .unwrap();
+        let env = |k: &str| match k {
+            "YARN_CACHE_FOLDER" => Some("/from/env".to_string()),
+            "XDG_CACHE_HOME" => Some("/xdg".to_string()),
+            _ => None,
+        };
+        let notes = yarn_cache_settings(home, env);
+        for v in ["/from/env", "/xdg/yarn", "/from/yarnrc"] {
+            assert!(notes.iter().any(|n| n.contains(v)), "{v}: {notes:?}");
+        }
+        std::fs::write(home.join(".yarnrc"), "cache-folder-x \"/no\"\n").unwrap();
+        assert!(yarn_cache_settings(home, |_| None).is_empty());
     }
 
     #[test]

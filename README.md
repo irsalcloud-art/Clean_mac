@@ -26,7 +26,9 @@ MacClean needs no administrator rights. It never runs `sudo` and never follows s
 | `clean --category homebrew-cache`: Homebrew's downloads | Implemented, tested (synthetic cache, plus a dry run against the development Mac's real cache) |
 | `clean --category gradle-cache`: Gradle's caches | Implemented, tested (synthetic cache, plus a real Gradle 9.6.1 cache cleaned and rebuilt) |
 | `clean --category cocoapods-cache`: CocoaPods' download cache | Implemented, tested (synthetic cache; CocoaPods is not installed on the development Mac) |
-| More cache categories (Yarn/pnpm, …) | Planned, each needs its own policy and tests first |
+| `clean --category yarn-cache`: Yarn 1 (classic) cache | Implemented, tested (synthetic cache; Yarn is not installed on the development Mac) |
+| Yarn 2+ global cache, pnpm store | Deliberately not supported: projects use them directly (see below) |
+| More cache categories | Each needs its own issue, policy and tests first |
 | Universal (fat) binary | Implemented: built with `lipo` from the two tested binaries in the release workflow, and smoke-tested natively on Apple Silicon, under Rosetta 2 and natively on Intel |
 | Custom Xcode DerivedData location (Xcode → Settings → Locations) | Implemented, tested; a per-workspace (relative) location is refused |
 | Arbitrary path deletion | Deliberately not supported |
@@ -124,7 +126,7 @@ macclean --help
 macclean --version
 macclean status [--format text|json]
 macclean analyze [PATHS]... [--top N] [--sort allocated|logical] [--max-depth N] [--exclude GLOB]... [--include-cloud] [--cross-mounts] [--format text|json]
-macclean clean [--category npm-cache|xcode-derived-data|pip-cache|homebrew-cache|gradle-cache|cocoapods-cache]... [--dry-run | --interactive] [--format text|json]
+macclean clean [--category npm-cache|xcode-derived-data|pip-cache|homebrew-cache|gradle-cache|cocoapods-cache|yarn-cache]... [--dry-run | --interactive] [--format text|json]
 macclean monitor [--interval SECS] [--count N] [--top N] [--sort cpu|memory|footprint] [--format text|json]
 macclean monitor --tui [--interval SECS] [--sort cpu|memory|footprint]
 macclean report [--path PATH]... [--top N] [--format text|json]
@@ -266,6 +268,18 @@ Disk "available" comes from `statfs(2)` and excludes APFS purgeable space, so Fi
 * **When it refuses:** while `pod` is running (`ruby …/bin/pod`, a shell wrapper such as Homebrew's, or `bundle exec pod`), checked when planning and again just before deleting; when there is no `Pods` folder; and when the cache is a symbolic link or reached through one.
 * **What it never touches:** `search_index.json` and any other entry (listed as "review"), and the spec repositories in `~/.cocoapods/repos`, which are outside the cache.
 
+### `yarn-cache`
+
+* **What it deletes:** the cache folders of Yarn 1 (classic) directly inside `~/Library/Caches/Yarn`: `v6`, the current format, and older ones such as `v4`. `yarn cache clean` deletes the whole folder, and running that yourself is the official way. Yarn 1 copies packages into each project's `node_modules`, so projects keep working, and Yarn downloads packages again when it needs them. Projects that use Yarn 1's experimental Plug'n'Play mode read from the cache and need `yarn install` again, as after `yarn cache clean`.
+* **Where it is:** only `~/Library/Caches/Yarn`. `YARN_CACHE_FOLDER`, `XDG_CACHE_HOME` (Yarn 1 then uses `$XDG_CACHE_HOME/yarn`, even on macOS) and `cache-folder` in `~/.yarnrc` are shown as notes, not followed.
+* **When it refuses:** while npm, npx, yarn or pnpm is running (the same check as `npm-cache`), checked when planning and again just before deleting; when there is no `v<N>` folder; and when the cache is a symbolic link or reached through one.
+* **What it never touches:** any other entry in `~/Library/Caches/Yarn` (listed as "review").
+
+**Not supported on purpose: the Yarn 2+ global cache and the pnpm store.** They hold packages that installed projects use directly, so they are not caches in MacClean's sense:
+
+* Yarn 2 and later keep packages as zip files in `~/.yarn/berry/cache` (`enableGlobalCache` is on by default), and Plug'n'Play projects load them from there while they run. Deleting them breaks those projects until `yarn install`. Use `yarn cache clean --mirror` instead.
+* pnpm's store (`~/Library/pnpm/store`) is linked into every project: by hard links or clones, and with `enableGlobalVirtualStore`, by symbolic links that break if the store goes. Use `pnpm store prune`, which removes only what no project uses.
+
 ## Security model
 
 Filesystem safety is treated as a requirement that blocks a release.
@@ -292,6 +306,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 * If a file is swapped for another regular file between the per-file check and the `unlink`, MacClean removes the new directory entry. That entry is still inside the verified cache directory.
 * The npm-running check looks at process names and command lines. It misses npm started under another name (a renamed binary, a wrapper that is not `node`, Bun) or right after the last check. Files npm writes after the plan was created are still skipped by the change-time rule.
 * An npm cache set on npm's command line (`--cache`) or only in a project `.npmrc` is not cleaned; the project setting is reported.
+* A Yarn 1 cache moved with `YARN_CACHE_FOLDER`, `XDG_CACHE_HOME` or `cache-folder` is not cleaned; only `~/Library/Caches/Yarn` is.
 * A CocoaPods cache moved with `CP_CACHE_DIR`, `CP_HOME_DIR` or `cache_root` is not cleaned; only `~/Library/Caches/CocoaPods` is.
 * Gradle caches in another Gradle user home (`GRADLE_USER_HOME`) are not cleaned; only `~/.gradle/caches` is.
 * A Homebrew cache moved with `HOMEBREW_CACHE` is not cleaned; only `~/Library/Caches/Homebrew` is, and settings MacClean can see are reported.
@@ -317,7 +332,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 sh scripts/check.sh
 ```
 
-The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (116 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (121 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
 
 * size calculations, directory aggregation, top-N limits, hard links
 * permission failures, files disappearing mid-scan, symlink roots and loops
