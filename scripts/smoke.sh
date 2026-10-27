@@ -58,6 +58,7 @@ run status
 run status --format json
 run analyze --top 5 src tests
 run analyze --top 5 --format json src
+run analyze --top 5 --max-depth 1 --exclude platform src tests
 run clean --dry-run
 run clean --dry-run --format json
 run monitor --count 2 --interval 1 --top 5

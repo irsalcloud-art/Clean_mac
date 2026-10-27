@@ -6,9 +6,10 @@
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
-use std::ffi::OsString;
+use std::ffi::{CString, OsStr, OsString};
 use std::fs;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -36,6 +37,55 @@ pub struct ScanOptions {
     pub sort_by: SizeMetric,
     /// Descend into directories that live on a different filesystem.
     pub cross_mounts: bool,
+    /// Rank only directories at most this many levels below a root (the
+    /// root itself is level 0). Sizes still include everything below.
+    pub max_depth: Option<usize>,
+    /// Entries to leave out entirely: not entered, not counted.
+    pub exclude: Vec<ExcludePattern>,
+}
+
+/// A shell glob (`*`, `?`, `[...]`, via fnmatch(3)). Without a `/` it is
+/// matched against an entry's name at any depth; with a `/` against the
+/// entry's path relative to the scanned root, where `*` does not cross `/`.
+#[derive(Debug, Clone)]
+pub struct ExcludePattern {
+    text: String,
+    glob: CString,
+    whole_path: bool,
+}
+
+impl ExcludePattern {
+    pub fn new(text: &str) -> Result<ExcludePattern, String> {
+        let trimmed = text.trim_matches('/');
+        if trimmed.is_empty() {
+            return Err("an --exclude pattern must not be empty".into());
+        }
+        let glob = CString::new(trimmed)
+            .map_err(|_| "an --exclude pattern must not contain a NUL byte".to_string())?;
+        Ok(ExcludePattern {
+            text: text.to_string(),
+            whole_path: trimmed.contains('/'),
+            glob,
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// `name` is the entry's own name, `relative` its path below the root.
+    pub fn matches(&self, name: &OsStr, relative: &Path) -> bool {
+        let (subject, flags) = if self.whole_path {
+            (relative.as_os_str(), libc::FNM_PATHNAME)
+        } else {
+            (name, 0)
+        };
+        let Ok(subject) = CString::new(subject.as_bytes()) else {
+            return false;
+        };
+        // SAFETY: both arguments are valid NUL-terminated strings.
+        unsafe { libc::fnmatch(self.glob.as_ptr(), subject.as_ptr(), flags) == 0 }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,6 +123,8 @@ pub struct ScanTotals {
     pub directories: u64,
     pub symlinks_not_followed: u64,
     pub other_entries: u64,
+    /// Entries left out by `--exclude` (subtrees count once).
+    pub excluded_entries: u64,
     /// Files with several hard links are counted once.
     pub hardlinks_deduplicated: u64,
     pub logical_bytes: u64,
@@ -83,6 +135,10 @@ pub struct ScanTotals {
 pub struct ScanReport {
     pub roots: Vec<PathBuf>,
     pub sort_by: SizeMetric,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
     pub totals: ScanTotals,
     pub top_files: Vec<SizedPath>,
     pub top_directories: Vec<SizedPath>,
@@ -273,8 +329,9 @@ impl<'h> Scanner<'h> {
 
         while let Some(top) = stack.last_mut() {
             let Some(name) = top.pending.next() else {
+                let depth = stack.len() - 1;
                 let done = stack.pop().expect("stack is non-empty");
-                self.finish_dir(&done);
+                self.finish_dir(&done, depth);
                 if let Some(parent) = stack.last_mut() {
                     parent.agg.logical += done.agg.logical;
                     parent.agg.allocated += done.agg.allocated;
@@ -283,6 +340,10 @@ impl<'h> Scanner<'h> {
                 continue;
             };
             let path = top.path.join(&name);
+            if self.excluded(&name, &path, root) {
+                self.totals.excluded_entries += 1;
+                continue;
+            }
             let meta = match fs::symlink_metadata(&path) {
                 Ok(m) => m,
                 Err(e) => {
@@ -360,7 +421,19 @@ impl<'h> Scanner<'h> {
         Some((logical, allocated))
     }
 
-    fn finish_dir(&mut self, frame: &Frame) {
+    fn excluded(&self, name: &OsStr, path: &Path, root: &Path) -> bool {
+        if self.opts.exclude.is_empty() {
+            return false;
+        }
+        let relative = path.strip_prefix(root).unwrap_or(path);
+        self.opts.exclude.iter().any(|p| p.matches(name, relative))
+    }
+
+    /// `depth` is 0 for a root, 1 for its subdirectories, and so on.
+    fn finish_dir(&mut self, frame: &Frame, depth: usize) {
+        if self.opts.max_depth.is_some_and(|max| depth > max) {
+            return;
+        }
         let key = self.key(frame.agg.logical, frame.agg.allocated);
         self.dirs.offer(key, || SizedPath {
             path: frame.path.clone(),
@@ -407,6 +480,12 @@ pub fn scan_with_hook(opts: ScanOptions, hook: Option<ListingHook<'_>>) -> ScanR
     ScanReport {
         roots: opts.roots,
         sort_by: opts.sort_by,
+        max_depth: opts.max_depth,
+        exclude: opts
+            .exclude
+            .iter()
+            .map(|p| p.as_str().to_string())
+            .collect(),
         totals,
         top_files: files.into_sorted(),
         top_directories: dirs.into_sorted(),
@@ -428,6 +507,8 @@ mod tests {
             roots: vec![root.to_path_buf()],
             top: 10,
             sort_by: SizeMetric::Logical,
+            max_depth: None,
+            exclude: Vec::new(),
             cross_mounts: false,
         }
     }
@@ -592,5 +673,118 @@ mod tests {
             .unwrap();
         assert_eq!(before, after);
         assert_eq!(fs::read(t.path().join("a/b/c")).unwrap().len(), 123);
+    }
+
+    fn dir_paths(r: &ScanReport) -> Vec<PathBuf> {
+        r.top_directories.iter().map(|d| d.path.clone()).collect()
+    }
+
+    #[test]
+    fn max_depth_limits_ranked_directories_but_not_sizes() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        write(&root.join("a/b/c/deep"), 1000);
+        write(&root.join("a/top"), 10);
+        write(&root.join("x/y"), 5);
+
+        let mut o = opts(&root);
+        o.max_depth = Some(1);
+        let r = scan(o);
+        let mut dirs = dir_paths(&r);
+        dirs.sort();
+        assert_eq!(dirs, vec![root.clone(), root.join("a"), root.join("x")]);
+        let a = r
+            .top_directories
+            .iter()
+            .find(|d| d.path == root.join("a"))
+            .unwrap();
+        // The deep file still counts towards its ancestors.
+        assert_eq!(a.logical_bytes, 1010);
+        assert_eq!(a.file_count, Some(2));
+        assert_eq!(r.totals.files, 3);
+        assert_eq!(r.top_files[0].path, root.join("a/b/c/deep"));
+        assert_eq!(r.max_depth, Some(1));
+
+        let mut o = opts(&root);
+        o.max_depth = Some(0);
+        assert_eq!(dir_paths(&scan(o)), vec![root.clone()]);
+
+        // Without a limit, the nested chain is ranked too.
+        assert!(dir_paths(&scan(opts(&root))).contains(&root.join("a/b/c")));
+    }
+
+    #[test]
+    fn excluded_names_are_neither_entered_nor_counted() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        write(&root.join("app/node_modules/pkg/index.js"), 5000);
+        write(&root.join("app/src/main.rs"), 100);
+        write(&root.join("app/debug.log"), 70);
+        write(&root.join("node_modules/x"), 9);
+
+        let mut o = opts(&root);
+        o.exclude = vec![
+            ExcludePattern::new("node_modules").unwrap(),
+            ExcludePattern::new("*.log").unwrap(),
+        ];
+        let r = scan(o);
+        assert_eq!(r.totals.files, 1);
+        assert_eq!(r.totals.logical_bytes, 100);
+        assert_eq!(r.totals.excluded_entries, 3);
+        assert!(!r.incomplete);
+        assert!(
+            dir_paths(&r)
+                .iter()
+                .all(|p| !p.components().any(|c| c.as_os_str() == "node_modules"))
+        );
+        assert_eq!(r.exclude, vec!["node_modules", "*.log"]);
+    }
+
+    #[test]
+    fn exclude_patterns_with_a_slash_match_the_path_below_the_root() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap();
+        write(&root.join("a/b/f"), 10);
+        write(&root.join("x/a/b/f"), 20);
+        write(&root.join("a/c/d/f"), 40);
+
+        let mut o = opts(&root);
+        o.exclude = vec![ExcludePattern::new("a/b").unwrap()];
+        let r = scan(o);
+        // Only root/a/b goes, not root/x/a/b.
+        assert_eq!(r.totals.logical_bytes, 60);
+
+        // `*` does not cross `/`: `a/*` matches a/c but a/c/d is never reached.
+        let mut o = opts(&root);
+        o.exclude = vec![ExcludePattern::new("a/*").unwrap()];
+        let r = scan(o);
+        assert_eq!(r.totals.logical_bytes, 20);
+        assert_eq!(r.totals.excluded_entries, 2);
+    }
+
+    #[test]
+    fn excluded_symlinks_are_not_followed_and_roots_are_never_excluded() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().canonicalize().unwrap().join("data");
+        write(&root.join("keep"), 10);
+        std::os::unix::fs::symlink(t.path(), root.join("link")).unwrap();
+        let mut o = opts(&root);
+        o.exclude = vec![
+            ExcludePattern::new("li*").unwrap(),
+            ExcludePattern::new("data").unwrap(),
+        ];
+        let r = scan(o);
+        assert_eq!(r.totals.excluded_entries, 1);
+        assert_eq!(r.totals.symlinks_not_followed, 0);
+        // The root itself matches `data` but was asked for explicitly.
+        assert_eq!(r.totals.logical_bytes, 10);
+    }
+
+    #[test]
+    fn invalid_exclude_patterns_are_rejected() {
+        assert!(ExcludePattern::new("").is_err());
+        assert!(ExcludePattern::new("/").is_err());
+        assert!(ExcludePattern::new("a\0b").is_err());
+        assert!(ExcludePattern::new("/build/").is_ok());
     }
 }

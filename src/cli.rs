@@ -12,7 +12,7 @@ use crate::errors::{MacCleanError, Result, exit};
 use crate::monitor::{self, Monitor, ProcessSort};
 use crate::platform;
 use crate::report::{self, FullReport, OutputFormat};
-use crate::scanner::{self, ScanOptions, SizeMetric};
+use crate::scanner::{self, ExcludePattern, ScanOptions, SizeMetric};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -65,6 +65,15 @@ pub struct AnalyzeArgs {
     /// Also descend into directories on other filesystems (mounted volumes).
     #[arg(long)]
     pub cross_mounts: bool,
+    /// Rank only directories at most N levels below each path (0 = the
+    /// paths themselves). Sizes still include everything below them.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(0..=1000))]
+    pub max_depth: Option<u16>,
+    /// Leave out entries matching this shell glob; repeat for several. A
+    /// pattern without `/` matches names at any depth (`node_modules`,
+    /// `*.log`); one with `/` matches the path below each analyzed path.
+    #[arg(long, value_name = "GLOB", value_parser = ExcludePattern::new)]
+    pub exclude: Vec<ExcludePattern>,
     #[command(flatten)]
     pub format: FormatArg,
 }
@@ -147,6 +156,8 @@ fn scan_options(
         top: usize::from(top),
         sort_by: sort,
         cross_mounts: cross,
+        max_depth: None,
+        exclude: Vec::new(),
     })
 }
 
@@ -252,7 +263,10 @@ fn dispatch(cli: Cli, out: &mut dyn Write) -> Result<u8> {
             Ok(exit::SUCCESS)
         }
         Command::Analyze(a) => {
-            let r = scanner::scan(scan_options(a.paths, a.top, a.sort, a.cross_mounts)?);
+            let mut opts = scan_options(a.paths, a.top, a.sort, a.cross_mounts)?;
+            opts.max_depth = a.max_depth.map(usize::from);
+            opts.exclude = a.exclude;
+            let r = scanner::scan(opts);
             match a.format.format {
                 OutputFormat::Text => report::render_scan(out, &r)?,
                 OutputFormat::Json => report::write_json(out, &r)?,

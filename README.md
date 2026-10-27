@@ -119,7 +119,7 @@ If you copied the binary somewhere by hand, delete that copy. MacClean creates n
 macclean --help
 macclean --version
 macclean status [--format text|json]
-macclean analyze [PATHS]... [--top N] [--sort allocated|logical] [--cross-mounts] [--format text|json]
+macclean analyze [PATHS]... [--top N] [--sort allocated|logical] [--max-depth N] [--exclude GLOB]... [--cross-mounts] [--format text|json]
 macclean clean [--category npm-cache|xcode-derived-data]... [--dry-run | --interactive] [--format text|json]
 macclean monitor [--interval SECS] [--count N] [--top N] [--sort cpu|memory|footprint] [--format text|json]
 macclean report [--path PATH]... [--top N] [--format text|json]
@@ -137,6 +137,14 @@ macclean analyze ~/Downloads ~/Library/Caches --top 20
 
 ```bash
 macclean analyze --top 20 --format json > scan.json
+```
+
+```bash
+macclean analyze ~ --max-depth 2 --top 20 --exclude Library/CloudStorage
+```
+
+```bash
+macclean analyze ~/Projects --exclude node_modules --exclude target --exclude '*.log'
 ```
 
 ```bash
@@ -161,6 +169,9 @@ macclean report --format json --path ~/Projects
 
 Notes:
 
+* `analyze --max-depth N` ranks only directories at most N levels below each path, like `du -d`, so one deep chain (`registry`, `registry/src`, …) no longer fills the list. Sizes still include everything below, so the whole tree is still read.
+* `analyze --exclude GLOB` (repeatable) leaves matching entries out: they are not entered and not counted. A pattern without `/` matches a name at any depth (`node_modules`, `*.log`); a pattern with `/` matches the path below each analyzed path (`Library/CloudStorage`), and `*` does not cross `/`. The paths you pass are never excluded. Excluded entries are counted in the summary and do not make the scan "incomplete".
+* Folders synced by cloud apps (`~/Library/CloudStorage`: iCloud Drive, Google Drive, Dropbox, OneDrive, …) live on the same volume, so `analyze ~` reads them too. Listing them can be very slow because the sync app answers each request, and it may make that app fetch folder listings. MacClean itself makes no network requests. Exclude them with `--exclude Library/CloudStorage`. On the development Mac, `analyze ~ --max-depth 2 --top 20` finished in 30 s with a 4.8 MB peak footprint when that folder was excluded, and was still waiting inside Google Drive after 10 minutes when it was not.
 * `analyze` with no paths scans **the current directory only**. It never scans the whole disk unless you pass `/` yourself. By default it stays on one filesystem; mount points it did not enter are listed.
 * `monitor --count 0` runs until you press Ctrl-C. With `--format json` and more than one sample, it prints one JSON object per line.
 * `clean` without `--interactive` is always a dry run. `--dry-run` and `--interactive` cannot be combined.
@@ -261,7 +272,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 sh scripts/check.sh
 ```
 
-The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (82 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (87 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
 
 * size calculations, directory aggregation, top-N limits, hard links
 * permission failures, files disappearing mid-scan, symlink roots and loops

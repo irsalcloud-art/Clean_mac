@@ -221,6 +221,24 @@ pub fn render_scan(w: &mut dyn Write, r: &ScanReport) -> io::Result<()> {
         "  {} symbolic links not followed, {} other entries, {} extra hard links counted once",
         t.symlinks_not_followed, t.other_entries, t.hardlinks_deduplicated
     )?;
+    if !r.exclude.is_empty() {
+        writeln!(
+            w,
+            "  Excluded {} entries matching {}",
+            t.excluded_entries,
+            r.exclude
+                .iter()
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )?;
+    }
+    if let Some(d) = r.max_depth {
+        writeln!(
+            w,
+            "  Directories ranked only down to {d} level(s) below each path; sizes include everything below."
+        )?;
+    }
     writeln!(
         w,
         "  Scan time: {:.2}s. Ranked by {} size.",

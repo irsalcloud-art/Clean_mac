@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- `analyze --max-depth N` ranks only directories up to N levels below each path, like `du -d`, while sizes still include everything below. `analyze --exclude GLOB` (repeatable) leaves out matching names or relative paths without entering or counting them, for example `--exclude node_modules` or `--exclude Library/CloudStorage` ([#12](https://github.com/irsalcloud-art/Clean_mac/issues/12)).
 - `monitor` shows each process's physical footprint (Activity Monitor's "Memory" column) next to RSS, and `--sort footprint` ranks by it. Footprint is reported as unavailable for other users' processes ([#11](https://github.com/irsalcloud-art/Clean_mac/issues/11)).
 
 ## [0.1.1] - 2026-10-27
