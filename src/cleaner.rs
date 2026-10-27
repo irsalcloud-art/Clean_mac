@@ -8,7 +8,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -16,7 +16,7 @@ use serde::Serialize;
 use crate::errors::{MacCleanError, Result};
 use crate::npm_config;
 use crate::platform::fsops::{self, FileId, FileKind, Meta, borrow};
-use crate::platform::{self, VolumeStats};
+use crate::platform::{self, PrefValue, VolumeStats};
 use crate::policy::{self, Risk, Verdict};
 
 /// How many skipped items and errors are listed individually per category.
@@ -71,6 +71,73 @@ pub enum NpmCacheSource {
     Explicit(PathBuf),
 }
 
+/// Where to get Xcode's DerivedData setting from.
+#[derive(Debug, Clone)]
+pub enum DerivedDataSetting {
+    /// Read `IDECustomDerivedDataLocation` from the `com.apple.dt.Xcode`
+    /// preferences of the current user.
+    ReadPreferences,
+    /// Use this value as if it had been read from the preferences.
+    Given(PrefValue),
+}
+
+pub const XCODE_PREFS_DOMAIN: &str = "com.apple.dt.Xcode";
+pub const XCODE_DERIVED_DATA_KEY: &str = "IDECustomDerivedDataLocation";
+
+/// Turns Xcode's DerivedData setting into the directory to clean and a
+/// description of where it came from, or explains why it is refused.
+/// Xcode stores an absolute path for a custom location, a relative one
+/// (resolved per workspace) for a relative location, and nothing for the
+/// default.
+pub fn derived_data_location(
+    setting: &PrefValue,
+    home: &Path,
+) -> std::result::Result<(PathBuf, String), String> {
+    let value = match setting {
+        PrefValue::Missing => {
+            return Ok((
+                home.join("Library/Developer/Xcode/DerivedData"),
+                "Xcode default location".into(),
+            ));
+        }
+        PrefValue::NotAString => {
+            return Err(format!(
+                "Xcode setting {XCODE_DERIVED_DATA_KEY} is not a path; DerivedData location is unclear"
+            ));
+        }
+        PrefValue::String(v) => v.trim(),
+    };
+    if value.is_empty() {
+        return Ok((
+            home.join("Library/Developer/Xcode/DerivedData"),
+            "Xcode default location".into(),
+        ));
+    }
+    let path = if let Some(rest) = value.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(value)
+    };
+    if !path.is_absolute() {
+        return Err(format!(
+            "Xcode keeps DerivedData relative to each workspace (`{value}`); MacClean cleans \
+             only one fixed location"
+        ));
+    }
+    if path
+        .components()
+        .any(|c| !matches!(c, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(format!(
+            "Xcode DerivedData location `{value}` contains `..` components"
+        ));
+    }
+    Ok((
+        path,
+        format!("Xcode custom location ({XCODE_DERIVED_DATA_KEY})"),
+    ))
+}
+
 #[derive(Debug, Clone)]
 pub struct CleanContext {
     /// Canonical home directory of the current user.
@@ -81,6 +148,7 @@ pub struct CleanContext {
     pub xcode_running: Option<bool>,
     /// `None` means detect running npm, npx, yarn or pnpm processes.
     pub package_manager_running: Option<bool>,
+    pub derived_data: DerivedDataSetting,
 }
 
 impl CleanContext {
@@ -96,6 +164,7 @@ impl CleanContext {
             npm_cache: NpmCacheSource::Detect,
             xcode_running: None,
             package_manager_running: test_package_manager_override(),
+            derived_data: DerivedDataSetting::ReadPreferences,
         })
     }
 }
@@ -493,10 +562,22 @@ fn resolve_root(id: CategoryId, ctx: &CleanContext) -> Resolution {
                     "Xcode or xcodebuild is running; quit it before cleaning DerivedData".into(),
                 );
             }
-            let expected = ctx.home.join("Library/Developer/Xcode/DerivedData");
-            match finish_resolution(expected.clone(), "Xcode default location".into(), &ctx.home) {
+            let setting = match &ctx.derived_data {
+                DerivedDataSetting::ReadPreferences => {
+                    platform::read_app_preference(XCODE_PREFS_DOMAIN, XCODE_DERIVED_DATA_KEY)
+                }
+                DerivedDataSetting::Given(v) => v.clone(),
+            };
+            let (expected, source) = match derived_data_location(&setting, &ctx.home) {
+                Ok(found) => found,
+                Err(why) => return Resolution::Refused(why),
+            };
+            // The same root policy applies to a custom location: inside home,
+            // not protected, not a symlink, and not reached through one.
+            match finish_resolution(expected.clone(), source, &ctx.home) {
                 Resolution::Root { path, .. } if path != expected => Resolution::Refused(format!(
-                    "{} resolves to {}; relocated DerivedData is not supported",
+                    "{} resolves to {}; DerivedData reached through a symbolic link is not \
+                     supported",
                     expected.display(),
                     path.display()
                 )),
@@ -1015,6 +1096,36 @@ pub fn execute(plan: &CleanPlan, ctx: &CleanContext) -> CleanOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derived_data_setting_values() {
+        let home = Path::new("/Users/ann");
+        let default = home.join("Library/Developer/Xcode/DerivedData");
+        let loc = |v: PrefValue| derived_data_location(&v, home);
+        let s = |v: &str| PrefValue::String(v.to_string());
+
+        assert_eq!(loc(PrefValue::Missing).unwrap().0, default);
+        assert_eq!(loc(s("")).unwrap().0, default);
+        let (path, source) = loc(s("/Users/ann/Builds/DD")).unwrap();
+        assert_eq!(path, home.join("Builds/DD"));
+        assert!(source.contains("custom"));
+        assert_eq!(loc(s("~/DD/")).unwrap().0, home.join("DD"));
+
+        assert!(loc(s("DerivedData")).unwrap_err().contains("relative"));
+        assert!(loc(s("../DD")).is_err());
+        assert!(loc(s("/Users/ann/x/../Documents")).is_err());
+        // An interior `.` is dropped by Path itself and names the same directory.
+        assert_eq!(loc(s("/Users/ann/./DD")).unwrap().0, home.join("DD"));
+        assert!(loc(PrefValue::NotAString).is_err());
+    }
+
+    #[test]
+    fn missing_preference_reads_as_missing() {
+        assert_eq!(
+            platform::read_app_preference(XCODE_PREFS_DOMAIN, "MacCleanNoSuchKey-7f3a"),
+            PrefValue::Missing
+        );
+    }
 
     #[test]
     fn package_manager_processes() {

@@ -64,6 +64,89 @@ pub fn sysctl_i32(name: &str) -> Option<i32> {
     (rc == 0 && len == std::mem::size_of::<libc::c_int>()).then_some(value)
 }
 
+/// A value read from the user's preferences (`CFPreferences`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrefValue {
+    Missing,
+    String(String),
+    /// Present but not a string (a number, array, …).
+    NotAString,
+}
+
+mod cf {
+    use std::ffi::c_void;
+    pub type CFTypeRef = *const c_void;
+    pub const UTF8: u32 = 0x0800_0100;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        pub fn CFStringCreateWithBytes(
+            alloc: CFTypeRef,
+            bytes: *const u8,
+            len: isize,
+            encoding: u32,
+            external: u8,
+        ) -> CFTypeRef;
+        pub fn CFPreferencesCopyAppValue(key: CFTypeRef, app: CFTypeRef) -> CFTypeRef;
+        pub fn CFGetTypeID(cf: CFTypeRef) -> usize;
+        pub fn CFStringGetTypeID() -> usize;
+        pub fn CFStringGetLength(s: CFTypeRef) -> isize;
+        pub fn CFStringGetMaximumSizeForEncoding(len: isize, encoding: u32) -> isize;
+        pub fn CFStringGetCString(s: CFTypeRef, buf: *mut u8, size: isize, encoding: u32) -> u8;
+        pub fn CFRelease(cf: CFTypeRef);
+    }
+
+    /// Releases a CoreFoundation object when dropped.
+    pub struct Owned(pub CFTypeRef);
+
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: the pointer came from a Create/Copy call, so we own one reference.
+                unsafe { CFRelease(self.0) }
+            }
+        }
+    }
+
+    pub fn string(s: &str) -> Option<Owned> {
+        // SAFETY: `s` is valid for `s.len()` bytes; a null allocator means the default.
+        let r = unsafe {
+            CFStringCreateWithBytes(std::ptr::null(), s.as_ptr(), s.len() as isize, UTF8, 0)
+        };
+        (!r.is_null()).then_some(Owned(r))
+    }
+}
+
+/// Reads `key` from the preferences of application `app` for the current
+/// user (for example `com.apple.dt.Xcode`). Read-only: nothing is written.
+pub fn read_app_preference(app: &str, key: &str) -> PrefValue {
+    let (Some(k), Some(a)) = (cf::string(key), cf::string(app)) else {
+        return PrefValue::Missing;
+    };
+    // SAFETY: both arguments are valid CFStrings; the result follows the Copy rule.
+    let value = cf::Owned(unsafe { cf::CFPreferencesCopyAppValue(k.0, a.0) });
+    if value.0.is_null() {
+        return PrefValue::Missing;
+    }
+    // SAFETY: `value` is a valid CF object.
+    if unsafe { cf::CFGetTypeID(value.0) != cf::CFStringGetTypeID() } {
+        return PrefValue::NotAString;
+    }
+    // SAFETY: `value` is a CFString; the buffer is sized for the worst case plus NUL.
+    unsafe {
+        let len = cf::CFStringGetLength(value.0);
+        let size = cf::CFStringGetMaximumSizeForEncoding(len, cf::UTF8) + 1;
+        let mut buf = vec![0u8; size.max(1) as usize];
+        if cf::CFStringGetCString(value.0, buf.as_mut_ptr(), size, cf::UTF8) == 0 {
+            return PrefValue::NotAString;
+        }
+        match CStr::from_bytes_until_nul(&buf) {
+            Ok(s) => PrefValue::String(s.to_string_lossy().into_owned()),
+            Err(_) => PrefValue::NotAString,
+        }
+    }
+}
+
 /// Ratio between the kernel VM page size (`vm.pagesize`) and the page size
 /// this process sees (`sysconf(_SC_PAGESIZE)`). It is 1 for native processes
 /// and 4 for x86_64 processes translated by Rosetta 2 on Apple Silicon.

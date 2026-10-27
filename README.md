@@ -24,7 +24,7 @@ MacClean needs no administrator rights. It never runs `sudo` and never follows s
 | Full-screen live TUI for `monitor` | Planned |
 | More cache categories (Homebrew, pip, Gradle, CocoaPods, …) | Planned, each needs its own policy and tests first |
 | Universal (fat) binary | Planned, after the x86_64 build is validated on Intel hardware |
-| Custom Xcode DerivedData location | Not supported (it is refused) |
+| Custom Xcode DerivedData location (Xcode → Settings → Locations) | Implemented, tested; a per-workspace (relative) location is refused |
 | Arbitrary path deletion | Deliberately not supported |
 
 The planned work, its priorities and goals are in [ROADMAP.md](ROADMAP.md).
@@ -191,8 +191,9 @@ Disk "available" comes from `statfs(2)` and excludes APFS purgeable space, so Fi
 
 ### `xcode-derived-data`
 
-* **What it deletes:** entries directly inside `~/Library/Developer/Xcode/DerivedData` that are either per-project folders named `<Project>-<28 lowercase letters>` (Xcode's naming scheme) or `ModuleCache.noindex`, `SymbolCache.noindex` or `CompilationCache.noindex`. Xcode rebuilds them on the next build, which can take a while.
-* **When it refuses:** while `Xcode`, `xcodebuild`, `XCBBuildService` or `SWBBuildService` is running, and when DerivedData is a symbolic link or has been moved.
+* **What it deletes:** entries directly inside the DerivedData folder that are either per-project folders named `<Project>-<28 lowercase letters>` (Xcode's naming scheme) or `ModuleCache.noindex`, `SymbolCache.noindex` or `CompilationCache.noindex`. Xcode rebuilds them on the next build, which can take a while.
+* **Where DerivedData is:** `~/Library/Developer/Xcode/DerivedData`, unless Xcode is set to a custom location (Xcode → Settings → Locations → Derived Data → Custom). MacClean reads that setting, `IDECustomDerivedDataLocation` in the `com.apple.dt.Xcode` preferences, without changing it. A custom location gets the same root checks as any category root: it must be inside your home folder, must not be or be inside a protected folder (Documents, Desktop, Application Support, `.ssh`, …), and must not be a symbolic link or reached through one. A location on another volume is refused.
+* **When it refuses:** while `Xcode`, `xcodebuild`, `XCBBuildService` or `SWBBuildService` is running; when DerivedData is a symbolic link or reached through one; when Xcode is set to a location relative to each workspace, which has no single folder to clean; and when the custom location fails the root checks above or contains `..`.
 * **What it never touches:** Archives, CoreSimulator devices, and any entry with an unrecognized name.
 
 ## Security model
@@ -220,7 +221,6 @@ Filesystem safety is treated as a requirement that blocks a release.
 * Descriptor-relative deletion stops redirection through symlinks. It cannot stop a process running as **your own user** from moving a directory MacClean is in the middle of deleting to somewhere else. Such a process could delete those files itself anyway.
 * If a file is swapped for another regular file between the per-file check and the `unlink`, MacClean removes the new directory entry. That entry is still inside the verified cache directory.
 * The npm-running check looks at process names and command lines. It misses npm started under another name (a renamed binary, a wrapper that is not `node`, Bun) or right after the last check. Files npm writes after the plan was created are still skipped by the change-time rule.
-* A custom Xcode DerivedData location set in Xcode preferences is not detected.
 * An npm cache set on npm's command line (`--cache`) or only in a project `.npmrc` is not cleaned; the project setting is reported.
 * No external security audit has been performed.
 
@@ -238,7 +238,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 sh scripts/check.sh
 ```
 
-The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (71 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (75 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
 
 * size calculations, directory aggregation, top-N limits, hard links
 * permission failures, files disappearing mid-scan, symlink roots and loops

@@ -20,7 +20,7 @@ main.rs ─► cli ─┬─► scanner ─────────────�
 | `cleaner` | Category definitions, root resolution, classification, planning (`plan`) and guarded deletion (`execute`) | Only in `execute` |
 | `npm_config` | Finds npm's cache directory from the environment and the user, global and builtin npmrc files in npm's order, without running npm | No |
 | `policy` | Protected locations, sensitive subtrees, `validate_category_root`, the `Risk`/`Verdict` types | No |
-| `platform` | sysctl, `statfs`, uid, home directory, TTY checks, architecture and Rosetta detection | No |
+| `platform` | sysctl, `statfs`, uid, home directory, TTY checks, architecture and Rosetta detection, reading app preferences | No |
 | `platform::fsops` | Descriptor-relative primitives: `open_dir_nofollow`, `open_dir_at`, `stat_at`, `read_dir_names`, `unlink_at`, `rmdir_at` | `unlink_at` and `rmdir_at` only |
 | `monitor` | CPU, memory, disk and process samples (via `sysinfo`), with a correction for the page size under Rosetta | No |
 | `report` | Human-readable text and JSON output for status, scans, plans, outcomes and samples | No |
@@ -32,7 +32,7 @@ Cleanup is split so that each stage can be checked on its own. Only the last sta
 
 ### 1. Resolve and validate the root
 
-`cleaner::resolve_root` finds each category's root directory. For `npm-cache` it refuses while npm, npx, yarn or pnpm is running (`running_package_manager`), then asks `npm_config::detect_npm_cache_dir`, which follows npm's order: environment, user npmrc, global npmrc, builtin npmrc, `~/.npm`. A project `.npmrc` is only reported, as a note on the plan. For `xcode-derived-data` it uses the fixed default location, and refuses while Xcode is running. `finish_resolution` refuses a root that is a symlink or not a directory, and canonicalizes it. Then `policy::validate_category_root` checks it:
+`cleaner::resolve_root` finds each category's root directory. For `npm-cache` it refuses while npm, npx, yarn or pnpm is running (`running_package_manager`), then asks `npm_config::detect_npm_cache_dir`, which follows npm's order: environment, user npmrc, global npmrc, builtin npmrc, `~/.npm`. A project `.npmrc` is only reported, as a note on the plan. For `xcode-derived-data` it refuses while Xcode is running, then reads Xcode's `IDECustomDerivedDataLocation` preference (`platform::read_app_preference`, read-only CFPreferences) and turns it into a root with `derived_data_location`, falling back to `~/Library/Developer/Xcode/DerivedData`. `finish_resolution` refuses a root that is a symlink or not a directory, and canonicalizes it. Then `policy::validate_category_root` checks it:
 
 * it must be an absolute path with no `.` or `..` components
 * it must lie strictly inside the canonical home directory
@@ -79,7 +79,7 @@ The `CleanOutcome` counts only successful removals, and lists every skip and fai
 ## Testing
 
 * **Unit tests** sit next to the code (`#[cfg(test)]` modules) and cover parsing, policy and classification.
-* **`tests/cleaner.rs`** builds a fake home directory in a `tempfile` directory and passes it in through `CleanContext { home, uid, npm_cache: NpmCacheSource::Explicit(..), xcode_running: Some(false), package_manager_running: Some(false) }`. This means no test touches the real home directory. The tests cover the attack and race scenarios listed in the README.
+* **`tests/cleaner.rs`** builds a fake home directory in a `tempfile` directory and passes it in through `CleanContext { home, uid, npm_cache: NpmCacheSource::Explicit(..), xcode_running: Some(false), package_manager_running: Some(false), derived_data: DerivedDataSetting::Given(..) }`. This means no test touches the real home directory. The tests cover the attack and race scenarios listed in the README.
 * **`tests/cli.rs`** runs the compiled binary and checks arguments, exit codes, JSON validity, and the refusal without a TTY. It sets `MACCLEAN_TEST_ASSUME_NO_PACKAGE_MANAGER` so a package manager running on the test machine does not refuse the npm-cache fixtures. Only debug builds read that variable. One test unsets it and starts a fake `npm install` process to check the refusal end to end.
 * **`scripts/check.sh`** runs formatting, clippy, the tests and release builds. **`scripts/smoke.sh`** runs every read-only command against a built binary. CI runs both on arm64 and on Intel, and under Rosetta 2 (`.github/workflows/ci.yml`).
 

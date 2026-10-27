@@ -6,9 +6,10 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 use macclean::cleaner::{
-    self, CategoryId, CategoryState, CleanContext, CleanOutcome, CleanPlan, NpmCacheSource,
+    self, CategoryId, CategoryState, CleanContext, CleanOutcome, CleanPlan, DerivedDataSetting,
+    NpmCacheSource,
 };
-use macclean::platform;
+use macclean::platform::{self, PrefValue};
 
 const XCODE_HASH: &str = "abcdefghijklmnopqrstuvwxyzab";
 
@@ -67,6 +68,7 @@ impl Fixture {
             npm_cache: NpmCacheSource::Explicit(self.p(".npm")),
             xcode_running: Some(false),
             package_manager_running: Some(false),
+            derived_data: DerivedDataSetting::Given(PrefValue::Missing),
         }
     }
 
@@ -573,6 +575,7 @@ fn missing_categories_are_reported_not_present() {
         npm_cache: NpmCacheSource::Explicit(home.join(".npm")),
         xcode_running: Some(false),
         package_manager_running: Some(false),
+        derived_data: DerivedDataSetting::Given(PrefValue::Missing),
     };
     let plan = cleaner::plan(&CategoryId::ALL, &ctx);
     for c in &plan.categories {
@@ -580,4 +583,106 @@ fn missing_categories_are_reported_not_present() {
     }
     assert!(!plan.has_candidates());
     assert!(cleaner::execute(&plan, &ctx).categories.is_empty());
+}
+
+fn with_derived_data(f: &Fixture, value: &str) -> CleanContext {
+    let mut ctx = f.ctx();
+    ctx.derived_data = DerivedDataSetting::Given(PrefValue::String(value.to_string()));
+    ctx
+}
+
+#[test]
+fn custom_derived_data_location_is_cleaned_like_the_default() {
+    let f = Fixture::new();
+    let custom = format!("Builds/DerivedData/Other-{XCODE_HASH}");
+    f.file(&format!("{custom}/Build/x"), 500);
+    f.file("Builds/DerivedData/ModuleCache.noindex/m.pcm", 10);
+    f.file("Builds/DerivedData/readme.txt", 10);
+    let ctx = with_derived_data(&f, &f.p("Builds/DerivedData").display().to_string());
+
+    let plan = cleaner::plan(&[CategoryId::XcodeDerivedData], &ctx);
+    let c = &plan.categories[0];
+    assert_eq!(c.state, CategoryState::Ready, "{c:#?}");
+    assert_eq!(c.root.as_deref(), Some(f.p("Builds/DerivedData").as_path()));
+    assert!(c.root_source.as_deref().unwrap().contains("custom"));
+    assert_eq!(c.candidates.len(), 2);
+
+    let out = cleaner::execute(&plan, &ctx);
+    assert!(!out.is_partial(), "{out:#?}");
+    assert!(!f.p(&custom).exists());
+    assert!(!f.p("Builds/DerivedData/ModuleCache.noindex").exists());
+    assert!(f.p("Builds/DerivedData/readme.txt").exists());
+    // The default location is not touched when a custom one is set.
+    assert!(
+        f.p(&format!(
+            "Library/Developer/Xcode/DerivedData/MyApp-{XCODE_HASH}/info.plist"
+        ))
+        .exists()
+    );
+    f.assert_survivors();
+}
+
+#[test]
+fn unsafe_custom_derived_data_locations_are_refused() {
+    let f = Fixture::new();
+    let outside = tempfile::tempdir().unwrap();
+    let outside_dd = outside.path().canonicalize().unwrap().join("DD");
+    let project = format!("Proj-{XCODE_HASH}/keep");
+    for dir in [
+        f.p("Documents/DD"),
+        f.p("Library/Application Support/DD"),
+        f.p(".ssh/DD"),
+        outside_dd.clone(),
+    ] {
+        fs::create_dir_all(dir.join(format!("Proj-{XCODE_HASH}"))).unwrap();
+        fs::write(dir.join(&project), b"k").unwrap();
+    }
+    fs::create_dir_all(f.p("real-dd")).unwrap();
+    symlink(f.p("Documents/DD"), f.p("linked-dd")).unwrap();
+
+    for (value, expect) in [
+        (
+            f.p("Documents/DD").display().to_string(),
+            CategoryState::Refused,
+        ),
+        (
+            f.p("Library/Application Support/DD").display().to_string(),
+            CategoryState::Refused,
+        ),
+        (f.p(".ssh/DD").display().to_string(), CategoryState::Refused),
+        (f.home.display().to_string(), CategoryState::Refused),
+        (outside_dd.display().to_string(), CategoryState::Refused),
+        (
+            f.p("linked-dd").display().to_string(),
+            CategoryState::Refused,
+        ),
+        (
+            f.p("real-dd/../Documents/DD").display().to_string(),
+            CategoryState::Refused,
+        ),
+        ("DerivedData".to_string(), CategoryState::Refused),
+        (
+            f.p("missing-dd").display().to_string(),
+            CategoryState::NotPresent,
+        ),
+    ] {
+        let ctx = with_derived_data(&f, &value);
+        let plan = cleaner::plan(&[CategoryId::XcodeDerivedData], &ctx);
+        let c = &plan.categories[0];
+        assert_eq!(c.state, expect, "{value}: {c:#?}");
+        assert!(c.candidates.is_empty(), "{value}");
+        if expect == CategoryState::Refused {
+            assert!(c.state_reason.is_some(), "{value}");
+        }
+        cleaner::execute(&plan, &ctx);
+    }
+    for dir in [
+        f.p("Documents/DD"),
+        f.p("Library/Application Support/DD"),
+        f.p(".ssh/DD"),
+        outside_dd,
+    ] {
+        assert!(dir.join(&project).exists(), "{}", dir.display());
+    }
+    f.assert_survivors();
 }
