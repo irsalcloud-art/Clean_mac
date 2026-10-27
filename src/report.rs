@@ -318,6 +318,43 @@ fn tally_line(t: &Tally) -> String {
     )
 }
 
+/// Quotes `s` for a POSIX shell command line.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// One explanation for every entry owned by another user, instead of a
+/// line per path. MacClean itself never runs sudo; the command is for the
+/// user to run, if they want to.
+fn render_foreign_owned(
+    w: &mut dyn Write,
+    count: u64,
+    root: Option<&std::path::Path>,
+    indent: &str,
+) -> io::Result<()> {
+    if count == 0 {
+        return Ok(());
+    }
+    writeln!(
+        w,
+        "{indent}{count} item(s) are owned by another user and are left in place. \
+         This usually comes from running the tool with sudo."
+    )?;
+    if let Some(root) = root {
+        writeln!(
+            w,
+            "{indent}MacClean never uses sudo. To make them yours, run this yourself, then run \
+             MacClean again:\n{indent}  sudo chown -R \"$(id -un)\" {}",
+            shell_quote(&root.to_string_lossy())
+        )?;
+    }
+    Ok(())
+}
+
+fn is_foreign(reason: &str) -> bool {
+    reason == crate::cleaner::OWNED_BY_ANOTHER_USER
+}
+
 pub fn render_plan(w: &mut dyn Write, p: &CleanPlan) -> io::Result<()> {
     writeln!(
         w,
@@ -356,7 +393,12 @@ pub fn render_plan(w: &mut dyn Write, p: &CleanPlan) -> io::Result<()> {
             writeln!(w, "  candidate: {}  — {}", cand.path.display(), cand.reason)?;
             writeln!(w, "             {}", tally_line(&cand.estimate))?;
         }
+        let mut foreign = 0;
         for r in &c.not_eligible {
+            if is_foreign(&r.reason) {
+                foreign += 1;
+                continue;
+            }
             let label = match r.risk {
                 crate::policy::Risk::Forbidden => "forbidden",
                 _ => "review",
@@ -365,17 +407,21 @@ pub fn render_plan(w: &mut dyn Write, p: &CleanPlan) -> io::Result<()> {
         }
         if !c.candidates.is_empty() {
             writeln!(w, "  Estimated: {}", tally_line(&c.estimate))?;
-            if c.estimate.skipped_total + c.estimate.errors_total > 0 {
+            foreign += c.estimate.foreign_owned;
+            let other_skips = c.estimate.skipped_total - c.estimate.foreign_owned;
+            if other_skips + c.estimate.errors_total > 0 {
                 writeln!(
                     w,
                     "  {} item(s) inside candidates will be skipped, {} could not be read:",
-                    c.estimate.skipped_total, c.estimate.errors_total
+                    other_skips, c.estimate.errors_total
                 )?;
-                for s in c.estimate.skipped.iter().chain(&c.estimate.errors).take(10) {
+                let listed = c.estimate.skipped.iter().filter(|s| !is_foreign(&s.reason));
+                for s in listed.chain(&c.estimate.errors).take(10) {
                     writeln!(w, "    {} — {}", s.path.display(), s.reason)?;
                 }
             }
         }
+        render_foreign_owned(w, foreign, c.root.as_deref(), "  ")?;
         total.absorb(&c.estimate);
     }
     writeln!(w, "\nTotal estimated: {}", tally_line(&total))?;
@@ -405,12 +451,15 @@ pub fn render_outcome(w: &mut dyn Write, o: &CleanOutcome) -> io::Result<()> {
         for r in &c.rejected_candidates {
             writeln!(w, "  not touched: {} — {}", r.path.display(), r.reason)?;
         }
-        if c.removed.skipped_total > 0 {
-            writeln!(w, "  Skipped {} item(s):", c.removed.skipped_total)?;
-            for s in c.removed.skipped.iter().take(20) {
+        let other_skips = c.removed.skipped_total - c.removed.foreign_owned;
+        if other_skips > 0 {
+            writeln!(w, "  Skipped {other_skips} item(s):")?;
+            let listed = c.removed.skipped.iter().filter(|s| !is_foreign(&s.reason));
+            for s in listed.take(20) {
                 writeln!(w, "    {} — {}", s.path.display(), s.reason)?;
             }
         }
+        render_foreign_owned(w, c.removed.foreign_owned, c.root.as_deref(), "  ")?;
         if c.removed.errors_total > 0 {
             writeln!(w, "  Failed to remove {} item(s):", c.removed.errors_total)?;
             for e in c.removed.errors.iter().take(20) {
@@ -545,5 +594,103 @@ mod tests {
         assert_eq!(human_duration(59), "0m 59s");
         assert_eq!(human_duration(3_700), "1h 1m");
         assert_eq!(human_duration(90_061), "1d 1h 1m");
+    }
+
+    #[test]
+    fn shell_quoting() {
+        assert_eq!(shell_quote("/Users/ann/.npm"), "'/Users/ann/.npm'");
+        assert_eq!(shell_quote("/a b/it's"), r"'/a b/it'\''s'");
+    }
+
+    #[test]
+    fn foreign_owned_entries_are_summarized_not_listed() {
+        use crate::cleaner::{
+            CategoryId, CategoryOutcome, CategoryPlan, ItemRecord, OWNED_BY_ANOTHER_USER,
+            ReviewItem,
+        };
+        use std::path::PathBuf;
+
+        let root = PathBuf::from("/Users/ann/.npm/_cacache");
+        let mut estimate = Tally::default();
+        for i in 0..22 {
+            estimate.skipped_total += 1;
+            estimate.foreign_owned += 1;
+            estimate.skipped.push(ItemRecord {
+                path: root.join(format!("content-v2/sha512/{i:02}")),
+                reason: OWNED_BY_ANOTHER_USER.into(),
+            });
+        }
+        estimate.skipped_total += 1;
+        estimate.skipped.push(ItemRecord {
+            path: root.join("index-v5/hardlinked"),
+            reason: "has other hard links; space would not be reclaimed".into(),
+        });
+        let plan = CleanPlan {
+            dry_run: true,
+            created_unix_secs: 0,
+            created_ns: 0,
+            categories: vec![CategoryPlan {
+                category: CategoryId::NpmCache,
+                description: CategoryId::NpmCache.description(),
+                state: CategoryState::Ready,
+                state_reason: None,
+                root: Some(root.clone()),
+                root_source: None,
+                root_id: None,
+                candidates: vec![crate::cleaner::Candidate {
+                    name: "content-v2".into(),
+                    path: root.join("content-v2"),
+                    kind: crate::platform::fsops::FileKind::Dir,
+                    id: crate::platform::fsops::FileId { dev: 1, ino: 2 },
+                    reason: "npm cacache".into(),
+                    estimate: estimate.clone(),
+                }],
+                not_eligible: vec![ReviewItem {
+                    path: root.join("tmp"),
+                    risk: crate::policy::Risk::Forbidden,
+                    reason: OWNED_BY_ANOTHER_USER.into(),
+                }],
+                estimate: estimate.clone(),
+            }],
+        };
+        let mut out = Vec::new();
+        render_plan(&mut out, &plan).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("sha512/00"), "{text}");
+        assert!(!text.contains("forbidden:"), "{text}");
+        assert!(
+            text.contains("23 item(s) are owned by another user"),
+            "{text}"
+        );
+        assert!(text.contains("index-v5/hardlinked"), "{text}");
+        assert!(
+            text.contains("1 item(s) inside candidates will be skipped"),
+            "{text}"
+        );
+        assert!(
+            text.contains(r#"sudo chown -R "$(id -un)" '/Users/ann/.npm/_cacache'"#),
+            "{text}"
+        );
+        assert_eq!(text.matches("owned by another user").count(), 1, "{text}");
+
+        let outcome = CleanOutcome {
+            categories: vec![CategoryOutcome {
+                category: CategoryId::NpmCache,
+                root: Some(root),
+                refused: None,
+                rejected_candidates: Vec::new(),
+                removed: estimate,
+                observed_available_delta_bytes: None,
+            }],
+        };
+        let mut out = Vec::new();
+        render_outcome(&mut out, &outcome).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("Skipped 1 item(s):"), "{text}");
+        assert!(
+            text.contains("22 item(s) are owned by another user"),
+            "{text}"
+        );
+        assert!(!text.contains("sha512/00"), "{text}");
     }
 }

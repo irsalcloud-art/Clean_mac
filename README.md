@@ -179,6 +179,13 @@ Disk "available" comes from `statfs(2)` and excludes APFS purgeable space, so Fi
   Values that use `${VAR}` expansion, or relative paths, are refused. Project-level and global npmrc files are not read.
 * **When it refuses:** while npm, npx, yarn or pnpm is running. MacClean checks this when it plans and again just before it deletes. It recognizes a process named `npm`, `npx`, `yarn`, `yarnpkg`, `pnpm` or `pnpx`, and a `node` process whose script is one of those or `npm-cli.js`, `npx-cli.js`, `yarn.js`/`yarn.cjs` (including corepack) or `pnpm.cjs`/`pnpm.mjs`. npm renames its own process (`npm install`, `npm exec …`), and that form is recognized too. The refusal names the processes it found. A long-running `npx` or `npm exec` server (an MCP server, for example) also blocks the category until you quit it.
 * **What it never touches:** `_logs`, `_npx`, `_update-notifier-last-checked`, and any entry in `_cacache` it does not recognize. Those are listed as "review". If `_cacache` contains neither `content-v2` nor `index-v5`, the whole category is refused.
+* **Entries owned by another user** (usually left behind by `sudo npm …`) are skipped. The plan shows how many there are in one line instead of listing each path, and prints a command you can run yourself to take them back:
+
+  ```bash
+  sudo chown -R "$(id -un)" ~/.npm/_cacache
+  ```
+
+  MacClean never runs `sudo` itself. JSON output still lists the paths (up to 100) and gives the count as `foreign_owned`.
 
 ### `xcode-derived-data`
 
@@ -228,7 +235,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 sh scripts/check.sh
 ```
 
-The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (63 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (65 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
 
 * size calculations, directory aggregation, top-N limits, hard links
 * permission failures, files disappearing mid-scan, symlink roots and loops

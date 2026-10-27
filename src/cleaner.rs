@@ -22,6 +22,9 @@ use crate::policy::{self, Risk, Verdict};
 pub const MAX_RECORDED_ITEMS: usize = 100;
 /// Directory nesting below a candidate beyond which MacClean refuses to go.
 pub const MAX_DEPTH: usize = 128;
+/// Skip reason for entries that belong to another user (typically left by
+/// `sudo npm`). Reports group these instead of listing each one.
+pub const OWNED_BY_ANOTHER_USER: &str = "owned by another user";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -126,6 +129,9 @@ pub struct Tally {
     /// the volume can differ (APFS clones, snapshots, open files).
     pub allocated_bytes: u64,
     pub skipped_total: u64,
+    /// How many of the skipped entries belong to another user. Included in
+    /// `skipped_total`.
+    pub foreign_owned: u64,
     pub skipped: Vec<ItemRecord>,
     pub errors_total: u64,
     pub errors: Vec<ItemRecord>,
@@ -133,11 +139,15 @@ pub struct Tally {
 
 impl Tally {
     fn skip(&mut self, path: &Path, reason: impl Into<String>) {
+        let reason = reason.into();
         self.skipped_total += 1;
+        if reason == OWNED_BY_ANOTHER_USER {
+            self.foreign_owned += 1;
+        }
         if self.skipped.len() < MAX_RECORDED_ITEMS {
             self.skipped.push(ItemRecord {
                 path: path.to_path_buf(),
-                reason: reason.into(),
+                reason,
             });
         }
     }
@@ -159,6 +169,7 @@ impl Tally {
         self.logical_bytes += other.logical_bytes;
         self.allocated_bytes += other.allocated_bytes;
         self.skipped_total += other.skipped_total;
+        self.foreign_owned += other.foreign_owned;
         self.errors_total += other.errors_total;
         for s in &other.skipped {
             if self.skipped.len() < MAX_RECORDED_ITEMS {
@@ -242,6 +253,8 @@ impl CleanPlan {
 #[derive(Debug, Clone, Serialize)]
 pub struct CategoryOutcome {
     pub category: CategoryId,
+    /// The category root from the plan.
+    pub root: Option<PathBuf>,
     /// Set when the category was refused at execution time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refused: Option<String>,
@@ -577,7 +590,7 @@ fn is_xcode_project_dir_name(name: &str) -> bool {
 
 fn classify(id: CategoryId, name: &OsStr, meta: &Meta, uid: u32) -> Verdict {
     if meta.uid != uid {
-        return Verdict::forbidden("owned by another user");
+        return Verdict::forbidden(OWNED_BY_ANOTHER_USER);
     }
     if meta.kind == FileKind::Symlink {
         return Verdict::forbidden("symbolic link; links are never followed");
@@ -630,7 +643,7 @@ impl Walker<'_> {
     /// Why a non-directory entry may not be removed, if it may not.
     fn ineligible(&self, m: &Meta) -> Option<&'static str> {
         if m.uid != self.uid {
-            Some("owned by another user")
+            Some(OWNED_BY_ANOTHER_USER)
         } else if m.kind == FileKind::File && m.nlink > 1 {
             Some("has other hard links; space would not be reclaimed")
         } else if m.changed_ns > self.cutoff_ns {
@@ -710,7 +723,7 @@ impl Walker<'_> {
         depth: usize,
     ) -> bool {
         if expected.uid != self.uid {
-            self.tally.skip(path, "owned by another user");
+            self.tally.skip(path, OWNED_BY_ANOTHER_USER);
             return false;
         }
         if expected.id.dev != self.dev {
@@ -944,6 +957,7 @@ fn available_bytes(path: &Path) -> Option<u64> {
 fn execute_category(cat: &CategoryPlan, ctx: &CleanContext, cutoff_ns: i128) -> CategoryOutcome {
     let mut out = CategoryOutcome {
         category: cat.category,
+        root: cat.root.clone(),
         refused: None,
         rejected_candidates: Vec::new(),
         removed: Tally::default(),
