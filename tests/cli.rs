@@ -32,6 +32,7 @@ impl Env {
         c.args(args)
             .env("HOME", &self.home)
             .env("npm_config_cache", self.home.join(".npm"))
+            .env("MACCLEAN_TEST_ASSUME_NO_PACKAGE_MANAGER", "1")
             .current_dir(&self.home)
             .stdin(Stdio::null());
         c
@@ -190,6 +191,38 @@ fn piped_yes_does_not_bypass_confirmation() {
     child.stdin.take().unwrap().write_all(b"yes\n").unwrap();
     let o = child.wait_with_output().unwrap();
     assert_eq!(code(&o), 5);
+    e.assert_untouched();
+}
+
+#[test]
+fn running_npm_refuses_npm_cache_cleanup() {
+    use std::os::unix::process::CommandExt;
+    let e = Env::new();
+    // A process that looks like `npm install` to `ps`: npm rewrites its
+    // argv[0] through process.title in the same way.
+    let mut npm = Command::new("/bin/sleep")
+        .arg0("npm install")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let clean = |args: &[&str]| {
+        let mut c = e.cmd(args);
+        c.env_remove("MACCLEAN_TEST_ASSUME_NO_PACKAGE_MANAGER");
+        c.output().unwrap()
+    };
+    let dry = clean(&["clean", "--category", "npm-cache", "--format", "json"]);
+    let interactive = clean(&["clean", "--category", "npm-cache", "--interactive"]);
+    npm.kill().unwrap();
+    npm.wait().unwrap();
+
+    let v = json(&dry);
+    assert_eq!(v["categories"][0]["state"], "refused");
+    let reason = v["categories"][0]["state_reason"].as_str().unwrap();
+    assert!(reason.contains("npm install"), "{reason}");
+    let err = String::from_utf8_lossy(&interactive.stderr);
+    assert!(err.contains("REFUSED"), "{err}");
+    assert!(err.contains("Nothing to delete"), "{err}");
+    assert_eq!(code(&interactive), 0);
     e.assert_untouched();
 }
 
