@@ -62,6 +62,7 @@ run clean --dry-run
 run clean --dry-run --format json
 run monitor --count 2 --interval 1 --top 5
 run monitor --count 1 --top 5 --format json
+run monitor --count 1 --top 5 --sort footprint
 run report --path src --top 5
 echo
 echo "smoke test passed"

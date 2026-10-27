@@ -121,7 +121,7 @@ macclean --version
 macclean status [--format text|json]
 macclean analyze [PATHS]... [--top N] [--sort allocated|logical] [--cross-mounts] [--format text|json]
 macclean clean [--category npm-cache|xcode-derived-data]... [--dry-run | --interactive] [--format text|json]
-macclean monitor [--interval SECS] [--count N] [--top N] [--sort cpu|memory] [--format text|json]
+macclean monitor [--interval SECS] [--count N] [--top N] [--sort cpu|memory|footprint] [--format text|json]
 macclean report [--path PATH]... [--top N] [--format text|json]
 ```
 
@@ -152,7 +152,7 @@ macclean clean --category npm-cache --interactive
 ```
 
 ```bash
-macclean monitor --interval 2 --count 0 --sort memory
+macclean monitor --interval 2 --count 0 --sort footprint
 ```
 
 ```bash
@@ -246,7 +246,11 @@ Filesystem safety is treated as a requirement that blocks a release.
 ## System monitor
 
 * **CPU:** average use across all logical cores over the sample interval, plus load averages. Per-process CPU is measured per core and can exceed 100%.
-* **Memory:** "used" is app + wired + compressed memory (close to Activity Monitor's "Memory Used"). "Available" is active + inactive + free + speculative pages. Process memory is the **resident set size (RSS)**. Shared pages are counted in every process that maps them, so process values do not add up to system usage, and they differ from Activity Monitor's "Memory" column (physical footprint).
+* **Memory:** "used" is app + wired + compressed memory (close to Activity Monitor's "Memory Used"). "Available" is active + inactive + free + speculative pages. Each process shows two values:
+  * **RSS** (resident set size): pages in RAM right now. Shared pages are counted in every process that maps them, and compressed or swapped-out memory is not counted, so it can be far below what the process really uses.
+  * **Footprint** (`ri_phys_footprint` from `proc_pid_rusage`): the memory macOS charges to the process, including compressed and swapped pages and excluding shared ones. This is Activity Monitor's "Memory" column and `top`'s `MEM`. macOS only reports it for your own processes (or every process when run as root); others show `–` in text and `null` in JSON. `--sort footprint` ranks by it, with unavailable values last.
+
+  Neither column adds up to system memory used.
 * Under Rosetta 2, macOS shows a translated process 4 KiB pages while the kernel counts 16 KiB pages. MacClean scales used and available memory by `vm.pagesize` so they match the native build. Without that correction (the `sysinfo` default), both values came out 4x too small.
 * Processes MacClean may not inspect (for example, some owned by root) can show zero usage.
 * The interval must be 1–3600 seconds. MacClean never terminates processes.
@@ -257,7 +261,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 sh scripts/check.sh
 ```
 
-The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (81 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (82 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
 
 * size calculations, directory aggregation, top-N limits, hard links
 * permission failures, files disappearing mid-scan, symlink roots and loops

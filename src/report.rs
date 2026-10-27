@@ -510,28 +510,33 @@ pub fn render_sample(w: &mut dyn Write, s: &Sample) -> io::Result<()> {
     }
     writeln!(
         w,
-        "\n  {:>7}  {:>7}  {:>10}  NAME   (sorted by {})",
+        "\n  {:>7}  {:>7}  {:>10}  {:>10}  NAME   (sorted by {})",
         "PID",
         "CPU%",
         "RSS",
+        "FOOTPRINT",
         match s.sorted_by {
             monitor::ProcessSort::Cpu => "CPU",
-            monitor::ProcessSort::Memory => "memory",
+            monitor::ProcessSort::Memory => "RSS",
+            monitor::ProcessSort::Footprint => "footprint",
         }
     )?;
     for p in &s.top_processes {
         writeln!(
             w,
-            "  {:>7}  {:>7.1}  {:>10}  {}",
+            "  {:>7}  {:>7.1}  {:>10}  {:>10}  {}",
             p.pid,
             p.cpu_percent,
             human_bytes(p.resident_bytes),
+            p.footprint_bytes
+                .map_or_else(|| "–".to_string(), human_bytes),
             p.name
         )?;
     }
     writeln!(
         w,
-        "  CPU% is per core (can exceed 100%). RSS counts shared memory in each process."
+        "  CPU% is per core (can exceed 100%). RSS counts shared memory in each process; \
+         FOOTPRINT matches Activity Monitor's \"Memory\" column (– = another user's process)."
     )?;
     Ok(())
 }

@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- `monitor` shows each process's physical footprint (Activity Monitor's "Memory" column) next to RSS, and `--sort footprint` ranks by it. Footprint is reported as unavailable for other users' processes ([#11](https://github.com/irsalcloud-art/Clean_mac/issues/11)).
+
 ## [0.1.1] - 2026-10-27
 
 First release with downloadable binaries for Apple Silicon, Intel and both (universal), with SHA-256 checksums.

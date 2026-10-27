@@ -17,7 +17,10 @@ pub const MAX_INTERVAL_SECS: u64 = 3600;
 #[serde(rename_all = "kebab-case")]
 pub enum ProcessSort {
     Cpu,
+    /// Resident set size (RSS).
     Memory,
+    /// Physical footprint, as in Activity Monitor's "Memory" column.
+    Footprint,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,6 +52,11 @@ pub struct ProcessMetrics {
     /// Resident set size of this process. Shared pages are counted in every
     /// process that maps them, so these values do not sum to system usage.
     pub resident_bytes: u64,
+    /// Physical footprint (`ri_phys_footprint`): the memory macOS charges to
+    /// the process, including compressed and swapped pages and excluding
+    /// shared ones. This is Activity Monitor's "Memory" column. `None` when
+    /// macOS does not let this user inspect the process (other users').
+    pub footprint_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,6 +84,23 @@ pub struct Monitor {
 
 fn process_kind() -> ProcessRefreshKind {
     ProcessRefreshKind::nothing().with_cpu().with_memory()
+}
+
+/// Physical footprint of a process, or `None` when macOS refuses to report
+/// it (processes of other users, unless running as root) or it has exited.
+pub fn process_footprint(pid: u32) -> Option<u64> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    // SAFETY: zeroed rusage_info_v2 is a valid out-parameter.
+    let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+    // SAFETY: the buffer is a rusage_info_v2, the struct RUSAGE_INFO_V2 fills.
+    let rc = unsafe {
+        libc::proc_pid_rusage(
+            pid,
+            libc::RUSAGE_INFO_V2,
+            (&mut info as *mut libc::rusage_info_v2).cast(),
+        )
+    };
+    (rc == 0).then_some(info.ri_phys_footprint)
 }
 
 impl Monitor {
@@ -115,6 +140,7 @@ impl Monitor {
                 name: p.name().to_string_lossy().into_owned(),
                 cpu_percent: p.cpu_usage(),
                 resident_bytes: p.memory(),
+                footprint_bytes: process_footprint(p.pid().as_u32()),
             })
             .collect();
         let process_count = procs.len();
@@ -129,14 +155,28 @@ impl Monitor {
                     .cmp(&a.resident_bytes)
                     .then(b.cpu_percent.total_cmp(&a.cpu_percent))
             }),
+            // Unavailable footprints (None) sort last.
+            ProcessSort::Footprint => procs.sort_by(|a, b| {
+                b.footprint_bytes
+                    .cmp(&a.footprint_bytes)
+                    .then(b.resident_bytes.cmp(&a.resident_bytes))
+            }),
         }
         procs.truncate(self.top);
 
         let load = System::load_average();
         let mut notes = vec![
-            "Process memory is resident set size (RSS); it is not comparable to system memory used."
+            "RSS counts shared pages in every process that maps them. Footprint is the memory \
+             macOS charges to the process (Activity Monitor's \"Memory\" column). Neither \
+             sums to system memory used."
                 .to_string(),
         ];
+        let hidden = procs.iter().filter(|p| p.footprint_bytes.is_none()).count();
+        if hidden > 0 {
+            notes.push(format!(
+                "Footprint is unavailable for {hidden} listed process(es) of other users."
+            ));
+        }
         let disk = platform::home_dir().and_then(|h| platform::volume_stats(&h).ok());
         if disk.is_none() {
             notes.push("Disk usage is unavailable.".into());
@@ -224,6 +264,32 @@ mod tests {
             s2.top_processes
                 .windows(2)
                 .all(|w| w[0].cpu_percent >= w[1].cpu_percent)
+        );
+    }
+
+    #[test]
+    fn footprint_of_own_process_is_nonzero_and_others_are_hidden() {
+        let me = process_footprint(std::process::id()).expect("own footprint");
+        assert!(me > 0);
+        // launchd belongs to root; only root may read its footprint.
+        if platform::current_uid() != 0 {
+            assert_eq!(process_footprint(1), None);
+        }
+        assert_eq!(process_footprint(u32::MAX), None);
+
+        let mut m = Monitor::new(
+            Duration::from_millis(250),
+            usize::MAX,
+            ProcessSort::Footprint,
+        );
+        let s = m.next_sample();
+        let fp: Vec<_> = s.top_processes.iter().map(|p| p.footprint_bytes).collect();
+        // Sorted descending, with unavailable values last.
+        assert!(fp.windows(2).all(|w| w[0] >= w[1]), "{fp:?}");
+        assert!(
+            s.top_processes
+                .iter()
+                .any(|p| p.pid == std::process::id() && p.footprint_bytes.is_some_and(|f| f > 0))
         );
     }
 
