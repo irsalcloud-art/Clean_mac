@@ -238,7 +238,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 sh scripts/check.sh
 ```
 
-The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (75 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (81 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
 
 * size calculations, directory aggregation, top-N limits, hard links
 * permission failures, files disappearing mid-scan, symlink roots and loops
@@ -250,6 +250,15 @@ The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
 * Xcode or a package manager running (at planning and at execution), recognition of npm/npx/yarn/pnpm processes, roots owned by another user, missing categories
 * CLI argument validation, exit codes, JSON validity, refusal without a TTY (including piped `yes`)
 * the monitor's ranges, sorting and process visibility
+* property tests (proptest) for the root policy: random component sequences, `..`, Unicode and case look-alikes, look-alike home folders such as `/Users/ann2`, and validity carrying over to subfolders
+* fuzz-style properties for entry names and descriptor-relative operations on arbitrary bytes, checking that nothing outside the given directory changes and that symlinks are never followed
+* a stress test that renames, swaps in symlinks, hard-links and adds files while `execute` runs, and checks that nothing that existed outside the cache, in Documents or in a decoy folder was removed or changed
+
+The property and stress tests are bounded so CI stays fast: 256 cases per property (set `PROPTEST_CASES` to change it) and 20 stress rounds (`MACCLEAN_STRESS_ROUNDS`). For a longer local run:
+
+```bash
+PROPTEST_CASES=5000 MACCLEAN_STRESS_ROUNDS=500 cargo test --test properties
+```
 
 ### Measured on the development Mac (Apple M3, release build)
 
@@ -266,7 +275,7 @@ Memory stays flat as the tree grows, because the scanner keeps only the top-N re
 ## Development notes
 
 * The development shell named in the brief (Rush) was not installed in the build environment. All commands were run with zsh and Cargo, and `scripts/check.sh` is plain POSIX `sh`. MacClean does not need Rush at runtime.
-* Dependencies: `clap` (CLI), `serde`/`serde_json` (JSON), `sysinfo` (CPU/memory/process metrics, `system` feature only), `thiserror` (errors), `libc` (`openat`/`fstatat`/`unlinkat`/`statfs`/`sysctl`), and `tempfile` (tests only).
+* Dependencies: `clap` (CLI), `serde`/`serde_json` (JSON), `sysinfo` (CPU/memory/process metrics, `system` feature only), `thiserror` (errors), `libc` (`openat`/`fstatat`/`unlinkat`/`statfs`/`sysctl`), and `tempfile` and `proptest` (tests only).
 * Modules: `cli`, `scanner`, `cleaner`, `npm_config`, `policy`, `monitor`, `platform` (with `platform::fsops`), `report`, `errors`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how they fit together.
 
 ## Contributing

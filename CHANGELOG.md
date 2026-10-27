@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - GitHub Actions CI on an Apple Silicon (`macos-15`) and an Intel (`macos-15-intel`) runner: formatting, clippy, tests, and release builds for both architectures. It also checks `minos 11.0` and runs the x86_64 tests under Rosetta 2 ([#1](https://github.com/irsalcloud-art/Clean_mac/issues/1), [#17](https://github.com/irsalcloud-art/Clean_mac/pull/17)).
 - `scripts/smoke.sh`: a read-only smoke test of every command, run in CI on both architectures ([#2](https://github.com/irsalcloud-art/Clean_mac/issues/2), [#18](https://github.com/irsalcloud-art/Clean_mac/pull/18)).
+- Property tests for the root policy and entry-name checks, and a stress test that mutates the cache while cleanup runs, all bounded so they run in CI on every pull request ([#4](https://github.com/irsalcloud-art/Clean_mac/issues/4)).
 - Open-source project files: dual MIT/Apache-2.0 license, contributing guide, code of conduct, security policy, issue and pull request templates, and architecture docs.
 
 ### Changed
