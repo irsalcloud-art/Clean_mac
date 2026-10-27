@@ -230,6 +230,32 @@ fn running_npm_refuses_npm_cache_cleanup() {
 }
 
 #[test]
+fn analyze_skips_cloud_folders_unless_included() {
+    let e = Env::new();
+    let cloud = e.home.join("Library/CloudStorage/Dropbox/big");
+    fs::create_dir_all(cloud.parent().unwrap()).unwrap();
+    fs::write(&cloud, vec![b'c'; 3000]).unwrap();
+
+    let o = e.run(&["analyze", "--format", "json"]);
+    assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stderr));
+    let v = json(&o);
+    assert_eq!(
+        v["cloud_folders_skipped"][0],
+        e.home.join("Library/CloudStorage").display().to_string()
+    );
+    assert_eq!(v["totals"]["logical_bytes"], 4120);
+    assert_eq!(v["incomplete"], false);
+    let text = stdout(&e.run(&["analyze"]));
+    assert!(text.contains("--include-cloud"), "{text}");
+
+    let o = e.run(&["analyze", "--include-cloud", "--format", "json"]);
+    let v = json(&o);
+    assert_eq!(v["cloud_folders_skipped"].as_array().unwrap().len(), 0);
+    assert_eq!(v["totals"]["logical_bytes"], 7120);
+    e.assert_untouched();
+}
+
+#[test]
 fn monitor_snapshot_and_stream() {
     let e = Env::new();
     let o = e.run(&[

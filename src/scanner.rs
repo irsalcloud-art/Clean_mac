@@ -42,6 +42,27 @@ pub struct ScanOptions {
     pub max_depth: Option<usize>,
     /// Entries to leave out entirely: not entered, not counted.
     pub exclude: Vec<ExcludePattern>,
+    /// Directories not descended into because a cloud app syncs them (see
+    /// [`cloud_folders`]). A root that is one of them is still scanned.
+    pub skip_cloud: Vec<FileId>,
+}
+
+/// Folders under `home` whose contents a sync app provides on demand:
+/// `Library/CloudStorage` (Google Drive, Dropbox, OneDrive and other File
+/// Provider apps) and `Library/Mobile Documents` (iCloud Drive). Listing them
+/// can wait on the app and make it fetch data, so `analyze` skips them
+/// unless asked. Identified by device and inode, so any spelling of the
+/// path matches. Folders that do not exist are left out.
+pub fn cloud_folders(home: &Path) -> Vec<FileId> {
+    ["Library/CloudStorage", "Library/Mobile Documents"]
+        .iter()
+        .filter_map(|rel| fs::symlink_metadata(home.join(rel)).ok())
+        .filter(|m| m.is_dir())
+        .map(|m| FileId {
+            dev: m.dev(),
+            ino: m.ino(),
+        })
+        .collect()
 }
 
 /// A shell glob (`*`, `?`, `[...]`, via fnmatch(3)). Without a `/` it is
@@ -148,6 +169,9 @@ pub struct ScanReport {
     pub skipped: Vec<SkippedPath>,
     /// Mount points intentionally not crossed (not counted as incomplete).
     pub mounts_not_crossed: Vec<PathBuf>,
+    /// Cloud-synced folders intentionally not entered (not counted as
+    /// incomplete); `--include-cloud` scans them.
+    pub cloud_folders_skipped: Vec<PathBuf>,
     pub elapsed_ms: u128,
 }
 
@@ -245,6 +269,7 @@ struct Scanner<'h> {
     skipped: Vec<SkippedPath>,
     skipped_total: u64,
     mounts_not_crossed: Vec<PathBuf>,
+    cloud_folders_skipped: Vec<PathBuf>,
     hook: Option<ListingHook<'h>>,
 }
 
@@ -371,6 +396,10 @@ impl<'h> Scanner<'h> {
                     self.mounts_not_crossed.push(path);
                     continue;
                 }
+                if self.opts.skip_cloud.contains(&id) {
+                    self.cloud_folders_skipped.push(path);
+                    continue;
+                }
                 if stack.iter().any(|f| f.id == id) {
                     self.skip(path, SkipReason::Cycle);
                     continue;
@@ -459,6 +488,7 @@ pub fn scan_with_hook(opts: ScanOptions, hook: Option<ListingHook<'_>>) -> ScanR
         skipped: Vec::new(),
         skipped_total: 0,
         mounts_not_crossed: Vec::new(),
+        cloud_folders_skipped: Vec::new(),
         hook,
         opts,
     };
@@ -474,6 +504,7 @@ pub fn scan_with_hook(opts: ScanOptions, hook: Option<ListingHook<'_>>) -> ScanR
         skipped,
         skipped_total,
         mounts_not_crossed,
+        cloud_folders_skipped,
         ..
     } = s;
 
@@ -493,6 +524,7 @@ pub fn scan_with_hook(opts: ScanOptions, hook: Option<ListingHook<'_>>) -> ScanR
         skipped_total,
         skipped,
         mounts_not_crossed,
+        cloud_folders_skipped,
         elapsed_ms: started.elapsed().as_millis(),
     }
 }
@@ -509,6 +541,7 @@ mod tests {
             sort_by: SizeMetric::Logical,
             max_depth: None,
             exclude: Vec::new(),
+            skip_cloud: Vec::new(),
             cross_mounts: false,
         }
     }
@@ -786,5 +819,49 @@ mod tests {
         assert!(ExcludePattern::new("/").is_err());
         assert!(ExcludePattern::new("a\0b").is_err());
         assert!(ExcludePattern::new("/build/").is_ok());
+    }
+
+    #[test]
+    fn cloud_folders_are_skipped_unless_scanned_directly() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().canonicalize().unwrap();
+        write(&home.join("Library/CloudStorage/GoogleDrive-a/doc"), 4000);
+        write(
+            &home.join("Library/Mobile Documents/com~apple~CloudDocs/note"),
+            2000,
+        );
+        write(&home.join("Library/Caches/c"), 30);
+        write(&home.join("file"), 5);
+
+        let cloud = cloud_folders(&home);
+        assert_eq!(cloud.len(), 2);
+        let mut o = opts(&home);
+        o.skip_cloud = cloud.clone();
+        let r = scan(o);
+        assert_eq!(r.totals.logical_bytes, 35);
+        assert!(!r.incomplete);
+        let mut skipped = r.cloud_folders_skipped.clone();
+        skipped.sort();
+        assert_eq!(
+            skipped,
+            vec![
+                home.join("Library/CloudStorage"),
+                home.join("Library/Mobile Documents")
+            ]
+        );
+
+        // Passing a cloud folder itself scans it: it was asked for.
+        let mut o = opts(&home.join("Library/CloudStorage"));
+        o.skip_cloud = cloud.clone();
+        let r = scan(o);
+        assert_eq!(r.totals.logical_bytes, 4000);
+        assert!(r.cloud_folders_skipped.is_empty());
+
+        // An empty skip list (--include-cloud) enters everything.
+        assert_eq!(scan(opts(&home)).totals.logical_bytes, 6035);
+
+        // Missing folders are simply absent from the list.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(cloud_folders(empty.path()).is_empty());
     }
 }

@@ -285,6 +285,16 @@ pub fn render_scan(w: &mut dyn Write, r: &ScanReport) -> io::Result<()> {
             f.path.display()
         )?;
     }
+    if !r.cloud_folders_skipped.is_empty() {
+        writeln!(
+            w,
+            "\nNot entered {} cloud-synced folder(s); listing them waits on the sync app (use --include-cloud):",
+            r.cloud_folders_skipped.len()
+        )?;
+        for p in &r.cloud_folders_skipped {
+            writeln!(w, "  {}", p.display())?;
+        }
+    }
     if !r.mounts_not_crossed.is_empty() {
         writeln!(
             w,

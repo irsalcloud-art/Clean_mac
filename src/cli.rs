@@ -74,6 +74,10 @@ pub struct AnalyzeArgs {
     /// `*.log`); one with `/` matches the path below each analyzed path.
     #[arg(long, value_name = "GLOB", value_parser = ExcludePattern::new)]
     pub exclude: Vec<ExcludePattern>,
+    /// Also enter cloud-synced folders (~/Library/CloudStorage and iCloud
+    /// Drive). Listing them can be slow and makes the sync app do work.
+    #[arg(long)]
+    pub include_cloud: bool,
     #[command(flatten)]
     pub format: FormatArg,
 }
@@ -158,6 +162,9 @@ fn scan_options(
         cross_mounts: cross,
         max_depth: None,
         exclude: Vec::new(),
+        skip_cloud: platform::home_dir()
+            .map(|h| scanner::cloud_folders(&h))
+            .unwrap_or_default(),
     })
 }
 
@@ -266,6 +273,9 @@ fn dispatch(cli: Cli, out: &mut dyn Write) -> Result<u8> {
             let mut opts = scan_options(a.paths, a.top, a.sort, a.cross_mounts)?;
             opts.max_depth = a.max_depth.map(usize::from);
             opts.exclude = a.exclude;
+            if a.include_cloud {
+                opts.skip_cloud.clear();
+            }
             let r = scanner::scan(opts);
             match a.format.format {
                 OutputFormat::Text => report::render_scan(out, &r)?,
