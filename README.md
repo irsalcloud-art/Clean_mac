@@ -46,7 +46,25 @@ Interactive cleanup (`clean --interactive`) has only been run by hand on the M3.
 
 The binary links only system libraries (libSystem, CoreFoundation, IOKit, libiconv). It does not depend on a particular Mac model or home directory path. Under Rosetta, `status` reports that the binary is translated.
 
-## Build and install
+## Install a release
+
+Releases on the [Releases page](https://github.com/irsalcloud-art/Clean_mac/releases) have one archive per architecture, `macclean-<version>-aarch64-apple-darwin.tar.gz` (Apple Silicon) and `macclean-<version>-x86_64-apple-darwin.tar.gz` (Intel), and a `SHA256SUMS` file. Each archive holds the `macclean` binary, this README, the changelog and both licenses. Every archive is built, tested and smoke-tested on a native runner of its architecture before it is published.
+
+```bash
+curl -LO https://github.com/irsalcloud-art/Clean_mac/releases/download/v<version>/macclean-<version>-aarch64-apple-darwin.tar.gz
+```
+
+```bash
+curl -LO https://github.com/irsalcloud-art/Clean_mac/releases/download/v<version>/SHA256SUMS
+```
+
+```bash
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+Then unpack it and copy `macclean` somewhere on your `PATH`, for example `~/.local/bin`. The binaries are not code-signed or notarized yet ([#7](https://github.com/irsalcloud-art/Clean_mac/issues/7)), so a copy downloaded with a web browser is quarantined and macOS refuses to open it. Download with `curl` and check the checksum.
+
+## Build from source
 
 You need a Rust toolchain (tested with Rust 1.95.0, edition 2024). Build with Cargo from any shell, for example Rush or zsh:
 
