@@ -12,6 +12,7 @@ use macclean::cleaner::{
 use macclean::platform::{self, PrefValue};
 
 const XCODE_HASH: &str = "abcdefghijklmnopqrstuvwxyzab";
+const BREW_HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 struct Fixture {
     _tmp: tempfile::TempDir,
@@ -60,6 +61,36 @@ impl Fixture {
         f.file("Library/Caches/pip/selfcheck/0123abcd.json", 60);
         f.file("Library/Caches/pip/notes.txt", 7);
         f.file("Library/Caches/Other/keep", 8);
+        // Homebrew cache, laid out like a real one: content-addressed
+        // downloads with symlinks pointing into them, and state to keep.
+        let brew = "Library/Caches/Homebrew";
+        f.file(
+            &format!("{brew}/downloads/{BREW_HASH}--jq--1.8.arm64.bottle.tar.gz"),
+            6000,
+        );
+        f.file(
+            &format!("{brew}/downloads/{BREW_HASH}--jq-1.8.bottle_manifest.json"),
+            900,
+        );
+        f.file(&format!("{brew}/downloads/{BREW_HASH}--App.dmg"), 2500);
+        symlink(
+            format!("downloads/{BREW_HASH}--jq--1.8.arm64.bottle.tar.gz"),
+            f.p(&format!("{brew}/jq--1.8")),
+        )
+        .unwrap();
+        fs::create_dir_all(f.p(&format!("{brew}/Cask"))).unwrap();
+        symlink(
+            format!("../downloads/{BREW_HASH}--App.dmg"),
+            f.p(&format!("{brew}/Cask/app--1.0.dmg")),
+        )
+        .unwrap();
+        f.file(&format!("{brew}/api/formula_names.txt"), 70);
+        f.file(&format!("{brew}/bootsnap/{BREW_HASH}/cache"), 40);
+        f.file(
+            &format!("{brew}/portable-ruby-4.0.7.arm64_big_sur.bottle.tar.gz"),
+            120,
+        );
+        f.file(&format!("{brew}/.cleaned"), 0);
         f
     }
 
@@ -81,6 +112,7 @@ impl Fixture {
             xcode_running: Some(false),
             package_manager_running: Some(false),
             pip_running: Some(false),
+            brew_running: Some(false),
             derived_data: DerivedDataSetting::Given(PrefValue::Missing),
         }
     }
@@ -101,6 +133,9 @@ impl Fixture {
             "Library/Caches/pip/selfcheck/0123abcd.json",
             "Library/Caches/pip/notes.txt",
             "Library/Caches/Other/keep",
+            "Library/Caches/Homebrew/api/formula_names.txt",
+            "Library/Caches/Homebrew/portable-ruby-4.0.7.arm64_big_sur.bottle.tar.gz",
+            "Library/Caches/Homebrew/.cleaned",
         ] {
             assert!(self.p(rel).exists(), "{rel} must not be deleted");
         }
@@ -360,6 +395,9 @@ fn symlinked_category_roots_are_refused() {
     fs::rename(f.p("Library/Caches/pip"), f.p("pip-elsewhere")).unwrap();
     symlink(f.p("pip-elsewhere"), f.p("Library/Caches/pip")).unwrap();
 
+    fs::rename(f.p("Library/Caches/Homebrew"), f.p("brew-elsewhere")).unwrap();
+    symlink(f.p("brew-elsewhere"), f.p("Library/Caches/Homebrew")).unwrap();
+
     let plan = f.plan(&CategoryId::ALL);
     for c in &plan.categories {
         assert_eq!(c.state, CategoryState::Refused, "{:?}", c.category);
@@ -595,6 +633,7 @@ fn missing_categories_are_reported_not_present() {
         xcode_running: Some(false),
         package_manager_running: Some(false),
         pip_running: Some(false),
+        brew_running: Some(false),
         derived_data: DerivedDataSetting::Given(PrefValue::Missing),
     };
     let plan = cleaner::plan(&CategoryId::ALL, &ctx);
@@ -847,6 +886,124 @@ fn pip_cache_dir_settings_are_reported_not_followed() {
         c.notes
             .iter()
             .any(|n| n.contains("/Volumes/Ext/pip-cache") && n.contains(".config/pip/pip.conf")),
+        "{:?}",
+        c.notes
+    );
+}
+
+fn brew(outcome: &CleanOutcome) -> &cleaner::CategoryOutcome {
+    outcome
+        .categories
+        .iter()
+        .find(|c| c.category == CategoryId::HomebrewCache)
+        .unwrap()
+}
+
+#[test]
+fn homebrew_cache_deletes_only_downloads() {
+    let f = Fixture::new();
+    let root = f.p("Library/Caches/Homebrew");
+    let (files, bytes) = allocated_under(&root.join("downloads"));
+
+    let plan = f.plan(&[CategoryId::HomebrewCache]);
+    let c = &plan.categories[0];
+    assert_eq!(c.state, CategoryState::Ready, "{c:#?}");
+    let names: Vec<_> = c.candidates.iter().map(|c| c.path.clone()).collect();
+    assert_eq!(names, vec![root.join("downloads")]);
+    assert_eq!(c.estimate.files, files);
+    assert_eq!(c.estimate.logical_bytes, 6000 + 900 + 2500);
+    assert_eq!(c.estimate.allocated_bytes, bytes);
+    // Symlinks into downloads, Cask, api, bootsnap and loose files are review
+    // (the top-level symlink is forbidden: links are never followed).
+    for kept in [".cleaned", "Cask", "api", "bootsnap", "jq--1.8"] {
+        assert!(
+            c.not_eligible.iter().any(|r| r.path == root.join(kept)),
+            "{kept}: {:#?}",
+            c.not_eligible
+        );
+    }
+
+    let out = cleaner::execute(&plan, &f.ctx());
+    assert!(!out.is_partial(), "{out:#?}");
+    assert_eq!(brew(&out).removed.logical_bytes, 9400);
+    assert!(!root.join("downloads").exists());
+    // The links themselves stay (dangling); Homebrew prunes broken links.
+    assert!(root.join("jq--1.8").is_symlink());
+    assert!(root.join("Cask/app--1.0.dmg").is_symlink());
+    assert!(root.join("bootsnap").is_dir());
+    f.assert_survivors();
+}
+
+#[test]
+fn brew_running_refuses_homebrew_cache() {
+    let f = Fixture::new();
+    let mut ctx = f.ctx();
+    ctx.brew_running = Some(true);
+    let plan = cleaner::plan(&[CategoryId::HomebrewCache], &ctx);
+    assert_eq!(plan.categories[0].state, CategoryState::Refused);
+    assert!(
+        plan.categories[0]
+            .state_reason
+            .as_deref()
+            .unwrap()
+            .contains("brew is running")
+    );
+    let plan = f.plan(&[CategoryId::HomebrewCache]);
+    let out = cleaner::execute(&plan, &ctx);
+    assert!(brew(&out).refused.is_some());
+    assert!(
+        f.p(&format!(
+            "Library/Caches/Homebrew/downloads/{BREW_HASH}--App.dmg"
+        ))
+        .exists()
+    );
+    f.assert_survivors();
+}
+
+#[test]
+fn unrecognized_homebrew_layout_is_refused() {
+    let f = Fixture::new();
+    fs::remove_dir_all(f.p("Library/Caches/Homebrew/downloads")).unwrap();
+    f.file("Library/Caches/Homebrew/photos/cat.jpg", 100);
+    let plan = f.plan(&[CategoryId::HomebrewCache]);
+    assert_eq!(plan.categories[0].state, CategoryState::Refused);
+    cleaner::execute(&plan, &f.ctx());
+    assert!(f.p("Library/Caches/Homebrew/photos/cat.jpg").exists());
+    f.assert_survivors();
+}
+
+#[test]
+fn homebrew_links_into_downloads_never_reach_outside() {
+    let f = Fixture::new();
+    let dl = f.p("Library/Caches/Homebrew/downloads");
+    symlink(f.p("Documents"), dl.join("docs-link")).unwrap();
+    fs::hard_link(f.p("Documents/important.txt"), dl.join("hardlink")).unwrap();
+    let plan = f.plan(&[CategoryId::HomebrewCache]);
+    let out = cleaner::execute(&plan, &f.ctx());
+    let b = brew(&out);
+    assert_eq!(b.removed.symlinks, 1);
+    assert!(b.removed.skipped_total >= 1);
+    assert!(dl.join("hardlink").exists());
+    assert_eq!(fs::read(f.p("Documents/important.txt")).unwrap().len(), 44);
+    f.assert_survivors();
+}
+
+#[test]
+fn homebrew_cache_settings_are_reported_not_followed() {
+    let f = Fixture::new();
+    f.file(".homebrew/brew.env", 0);
+    fs::write(
+        f.p(".homebrew/brew.env"),
+        "export HOMEBREW_CACHE=\"/Volumes/Ext/brew-cache\"\n",
+    )
+    .unwrap();
+    let plan = f.plan(&[CategoryId::HomebrewCache]);
+    let c = &plan.categories[0];
+    assert_eq!(c.state, CategoryState::Ready);
+    assert!(
+        c.notes
+            .iter()
+            .any(|n| n.contains("/Volumes/Ext/brew-cache") && n.contains("brew.env")),
         "{:?}",
         c.notes
     );

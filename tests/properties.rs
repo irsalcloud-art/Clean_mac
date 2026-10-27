@@ -232,6 +232,7 @@ fn differently_spelled_protected_folders_are_refused() {
             xcode_running: Some(false),
             package_manager_running: Some(false),
             pip_running: Some(false),
+            brew_running: Some(false),
             derived_data: DerivedDataSetting::Given(PrefValue::Missing),
         };
         let plan = cleaner::plan(&[CategoryId::NpmCache], &ctx);
@@ -386,6 +387,7 @@ impl StressFixture {
             xcode_running: Some(false),
             package_manager_running: Some(false),
             pip_running: Some(false),
+            brew_running: Some(false),
             derived_data: DerivedDataSetting::Given(PrefValue::Missing),
         }
     }

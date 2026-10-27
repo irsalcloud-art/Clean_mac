@@ -36,13 +36,17 @@ pub enum CategoryId {
     XcodeDerivedData,
     /// pip's download and wheel cache in `~/Library/Caches/pip`.
     PipCache,
+    /// Homebrew's downloaded bottles and sources in
+    /// `~/Library/Caches/Homebrew/downloads`.
+    HomebrewCache,
 }
 
 impl CategoryId {
-    pub const ALL: [CategoryId; 3] = [
+    pub const ALL: [CategoryId; 4] = [
         CategoryId::NpmCache,
         CategoryId::XcodeDerivedData,
         CategoryId::PipCache,
+        CategoryId::HomebrewCache,
     ];
 
     pub fn name(self) -> &'static str {
@@ -50,6 +54,7 @@ impl CategoryId {
             CategoryId::NpmCache => "npm-cache",
             CategoryId::XcodeDerivedData => "xcode-derived-data",
             CategoryId::PipCache => "pip-cache",
+            CategoryId::HomebrewCache => "homebrew-cache",
         }
     }
 
@@ -71,6 +76,13 @@ impl CategoryId {
                  downloads or builds packages again when it needs them; equivalent to \
                  `pip cache purge`. Self-check state and unknown entries are not touched. \
                  Refused while pip is running."
+            }
+            CategoryId::HomebrewCache => {
+                "Homebrew's downloaded bottles, casks and sources \
+                 (~/Library/Caches/Homebrew/downloads). Homebrew downloads them again when \
+                 it needs them; like `brew cleanup --prune=all` for downloads. The API \
+                 cache, bootsnap cache and other entries are not touched. Refused while \
+                 brew is running."
             }
         }
     }
@@ -163,6 +175,8 @@ pub struct CleanContext {
     pub package_manager_running: Option<bool>,
     /// `None` means detect running pip processes.
     pub pip_running: Option<bool>,
+    /// `None` means detect running brew processes.
+    pub brew_running: Option<bool>,
     pub derived_data: DerivedDataSetting,
 }
 
@@ -180,6 +194,7 @@ impl CleanContext {
             xcode_running: None,
             package_manager_running: test_package_manager_override(),
             pip_running: test_package_manager_override(),
+            brew_running: test_package_manager_override(),
             derived_data: DerivedDataSetting::ReadPreferences,
         })
     }
@@ -496,6 +511,29 @@ fn running_pip() -> Option<String> {
     running_processes(is_pip_process)
 }
 
+/// True when a process is Homebrew: `brew` is a bash script that runs
+/// `ruby … Library/Homebrew/brew.rb`, so a shell or Ruby process whose
+/// script is `brew`, `brew.sh` or `brew.rb`.
+fn is_brew_process(name: &OsStr, cmd: &[OsString]) -> bool {
+    let interpreter = Path::new(name)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|n| matches!(n, "bash" | "sh" | "zsh" | "dash" | "ruby"));
+    interpreter
+        && cmd
+            .iter()
+            .skip(1)
+            .find(|a| !a.to_string_lossy().starts_with('-'))
+            .and_then(|script| Path::new(script).file_name())
+            .and_then(OsStr::to_str)
+            .is_some_and(|n| matches!(n, "brew" | "brew.sh" | "brew.rb"))
+}
+
+/// Describes the running brew processes, if any.
+fn running_brew() -> Option<String> {
+    running_processes(is_brew_process)
+}
+
 /// Describes the running npm, npx, yarn or pnpm processes, if any.
 fn running_package_manager() -> Option<String> {
     running_processes(is_package_manager_process)
@@ -694,7 +732,78 @@ fn resolve_root(id: CategoryId, ctx: &CleanContext) -> Resolution {
                 other => other,
             }
         }
+        CategoryId::HomebrewCache => {
+            let running = match ctx.brew_running {
+                Some(true) => Some("a brew process".to_string()),
+                Some(false) => None,
+                None => running_brew(),
+            };
+            if let Some(what) = running {
+                return Resolution::Refused(format!(
+                    "brew is running ({what}); wait for it to finish before cleaning its cache"
+                ));
+            }
+            let notes = homebrew_cache_settings(&ctx.home, |k| {
+                std::env::var_os(k).map(|v| v.to_string_lossy().into_owned())
+            });
+            let expected = ctx.home.join("Library/Caches/Homebrew");
+            match finish_resolution(
+                expected.clone(),
+                "Homebrew default location".into(),
+                &ctx.home,
+            ) {
+                Resolution::Root { path, .. } if path != expected => Resolution::Refused(format!(
+                    "{} resolves to {}; a Homebrew cache reached through a symbolic link is \
+                     not supported",
+                    expected.display(),
+                    path.display()
+                )),
+                Resolution::Root { path, source, .. } => Resolution::Root {
+                    path,
+                    source,
+                    notes,
+                },
+                other => other,
+            }
+        }
     }
+}
+
+/// Other cache locations Homebrew may be configured with: `HOMEBREW_CACHE`
+/// in the environment or in a `brew.env` file. Each one found becomes a
+/// note; MacClean does not follow them.
+fn homebrew_cache_settings(home: &Path, env: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let mut notes = Vec::new();
+    let note = |where_: String, value: &str| {
+        format!(
+            "{where_} sets Homebrew's cache to `{value}`; MacClean cleans only \
+             ~/Library/Caches/Homebrew"
+        )
+    };
+    if let Some(v) = env("HOMEBREW_CACHE").filter(|v| !v.is_empty()) {
+        notes.push(note("$HOMEBREW_CACHE".into(), &v));
+    }
+    for file in [
+        home.join(".homebrew/brew.env"),
+        PathBuf::from("/opt/homebrew/etc/homebrew/brew.env"),
+        PathBuf::from("/usr/local/etc/homebrew/brew.env"),
+        PathBuf::from("/etc/homebrew/brew.env"),
+    ] {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            let line = line.strip_prefix("export ").unwrap_or(line);
+            if let Some((key, value)) = line.split_once('=')
+                && key.trim() == "HOMEBREW_CACHE"
+            {
+                let v = value.trim().trim_matches(|c| c == '"' || c == '\'');
+                notes.push(note(file.display().to_string(), v));
+            }
+        }
+    }
+    notes
 }
 
 /// Other cache locations pip may be configured with: `PIP_CACHE_DIR` and
@@ -741,6 +850,9 @@ const NPM_ENTRIES: [&str; 3] = ["content-v2", "index-v5", "tmp"];
 /// What `pip cache purge` empties: the HTTP caches (`http-v2` since pip
 /// 23.3, `http` before) and locally built wheels.
 const PIP_ENTRIES: [&str; 3] = ["http", "http-v2", "wheels"];
+/// Homebrew keeps every download, content-addressed, in `downloads`; the
+/// other entries point into it or are not downloads.
+const HOMEBREW_ENTRIES: [&str; 1] = ["downloads"];
 const XCODE_CACHE_DIRS: [&str; 3] = [
     "ModuleCache.noindex",
     "SymbolCache.noindex",
@@ -792,6 +904,13 @@ fn classify(id: CategoryId, name: &OsStr, meta: &Meta, uid: u32) -> Verdict {
                 Verdict::safe(format!("pip cache `{name}` directory"))
             } else {
                 Verdict::review("not part of pip's cache layout; left untouched")
+            }
+        }
+        CategoryId::HomebrewCache => {
+            if meta.kind == FileKind::Dir && HOMEBREW_ENTRIES.contains(&name) {
+                Verdict::safe("Homebrew downloads (bottles, casks, sources)")
+            } else {
+                Verdict::review("not Homebrew's download store; left untouched")
             }
         }
     }
@@ -1052,6 +1171,7 @@ fn plan_category(id: CategoryId, ctx: &CleanContext, cutoff_ns: i128) -> Categor
     let signature: &[&str] = match id {
         CategoryId::NpmCache => &["content-v2", "index-v5"],
         CategoryId::PipCache => &PIP_ENTRIES,
+        CategoryId::HomebrewCache => &HOMEBREW_ENTRIES,
         CategoryId::XcodeDerivedData => &[],
     };
     if !signature.is_empty() && !names.iter().any(|n| signature.iter().any(|s| n == s)) {
@@ -1312,6 +1432,65 @@ mod tests {
         assert_eq!(
             command_line(OsStr::new("x"), &os(&[&long])).chars().count(),
             121
+        );
+    }
+
+    #[test]
+    fn brew_processes() {
+        let is_brew = |name: &str, cmd: &[&str]| {
+            let cmd: Vec<OsString> = cmd.iter().map(OsString::from).collect();
+            is_brew_process(OsStr::new(name), &cmd)
+        };
+        assert!(is_brew(
+            "bash",
+            &[
+                "/bin/bash",
+                "-pu",
+                "/opt/homebrew/bin/brew",
+                "install",
+                "jq"
+            ]
+        ));
+        assert!(is_brew(
+            "ruby",
+            &[
+                "/x/portable-ruby/current/bin/ruby",
+                "-W1",
+                "--disable=gems,rubyopt",
+                "/opt/homebrew/Library/Homebrew/brew.rb",
+                "upgrade"
+            ]
+        ));
+        assert!(is_brew(
+            "/bin/bash",
+            &["bash", "/usr/local/Homebrew/Library/Homebrew/brew.sh"]
+        ));
+
+        assert!(!is_brew(
+            "curl",
+            &["curl", "--user-agent", "Homebrew/7.0", "https://x/brew"]
+        ));
+        assert!(!is_brew("vim", &["vim", "brew.rb"]));
+        assert!(!is_brew("bash", &["bash", "build.sh", "brew"]));
+        assert!(!is_brew("ruby", &["ruby", "brewery.rb"]));
+    }
+
+    #[test]
+    fn homebrew_cache_settings_from_env_and_files() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path();
+        std::fs::create_dir_all(home.join(".homebrew")).unwrap();
+        std::fs::write(
+            home.join(".homebrew/brew.env"),
+            "HOMEBREW_NO_ANALYTICS=1\nHOMEBREW_CACHE='/from/file'\n",
+        )
+        .unwrap();
+        let env = |k: &str| (k == "HOMEBREW_CACHE").then(|| "/from/env".to_string());
+        let notes = homebrew_cache_settings(home, env);
+        assert!(notes.iter().any(|n| n.contains("`/from/env`")), "{notes:?}");
+        assert!(
+            notes.iter().any(|n| n.contains("`/from/file`")),
+            "{notes:?}"
         );
     }
 
