@@ -39,14 +39,17 @@ pub enum CategoryId {
     /// Homebrew's downloaded bottles and sources in
     /// `~/Library/Caches/Homebrew/downloads`.
     HomebrewCache,
+    /// Gradle's dependency and build caches in `~/.gradle/caches`.
+    GradleCache,
 }
 
 impl CategoryId {
-    pub const ALL: [CategoryId; 4] = [
+    pub const ALL: [CategoryId; 5] = [
         CategoryId::NpmCache,
         CategoryId::XcodeDerivedData,
         CategoryId::PipCache,
         CategoryId::HomebrewCache,
+        CategoryId::GradleCache,
     ];
 
     pub fn name(self) -> &'static str {
@@ -55,6 +58,7 @@ impl CategoryId {
             CategoryId::XcodeDerivedData => "xcode-derived-data",
             CategoryId::PipCache => "pip-cache",
             CategoryId::HomebrewCache => "homebrew-cache",
+            CategoryId::GradleCache => "gradle-cache",
         }
     }
 
@@ -83,6 +87,13 @@ impl CategoryId {
                  it needs them; like `brew cleanup --prune=all` for downloads. The API \
                  cache, bootsnap cache and other entries are not touched. Refused while \
                  brew is running."
+            }
+            CategoryId::GradleCache => {
+                "Gradle's version-specific caches and shared dependency, jar, transform and \
+                 build caches in ~/.gradle/caches. Gradle rebuilds them and downloads \
+                 dependencies again on the next build, which needs network access. Daemon \
+                 logs, JDKs, wrapper distributions and settings are not touched. Refused \
+                 while any Gradle daemon or build is running."
             }
         }
     }
@@ -177,6 +188,8 @@ pub struct CleanContext {
     pub pip_running: Option<bool>,
     /// `None` means detect running brew processes.
     pub brew_running: Option<bool>,
+    /// `None` means detect running Gradle daemons and builds.
+    pub gradle_running: Option<bool>,
     pub derived_data: DerivedDataSetting,
 }
 
@@ -195,6 +208,7 @@ impl CleanContext {
             package_manager_running: test_package_manager_override(),
             pip_running: test_package_manager_override(),
             brew_running: test_package_manager_override(),
+            gradle_running: test_package_manager_override(),
             derived_data: DerivedDataSetting::ReadPreferences,
         })
     }
@@ -534,6 +548,27 @@ fn running_brew() -> Option<String> {
     running_processes(is_brew_process)
 }
 
+/// Main classes of Gradle's JVM processes: the daemon (also started by
+/// Android Studio), a build run with `--no-daemon`, and the wrapper.
+const GRADLE_MAIN_CLASSES: [&str; 3] = [
+    "org.gradle.launcher.daemon.bootstrap.GradleDaemon",
+    "org.gradle.launcher.GradleMain",
+    "org.gradle.wrapper.GradleWrapperMain",
+];
+
+/// True when a process is a Gradle daemon, build or wrapper. These run in
+/// a JVM, so they are recognized by the main class among their arguments.
+fn is_gradle_process(_name: &OsStr, cmd: &[OsString]) -> bool {
+    cmd.iter()
+        .skip(1)
+        .any(|a| a.to_str().is_some_and(|a| GRADLE_MAIN_CLASSES.contains(&a)))
+}
+
+/// Describes the running Gradle processes, if any.
+fn running_gradle() -> Option<String> {
+    running_processes(is_gradle_process)
+}
+
 /// Describes the running npm, npx, yarn or pnpm processes, if any.
 fn running_package_manager() -> Option<String> {
     running_processes(is_package_manager_process)
@@ -559,10 +594,23 @@ fn command_line(name: &OsStr, cmd: &[OsString]) -> String {
     } else {
         joined.trim().to_string()
     };
-    match text.char_indices().nth(120) {
-        Some((cut, _)) => format!("{}…", &text[..cut]),
-        None => text,
+    // Keep the program and the end of a long line: for a JVM the end holds
+    // the main class and its arguments, the start only options.
+    const MAX: usize = 120;
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= MAX {
+        return text;
     }
+    let program: String = text
+        .split(' ')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(40)
+        .collect();
+    let tail_len = MAX.saturating_sub(program.chars().count() + 3);
+    let tail: String = chars[chars.len() - tail_len..].iter().collect();
+    format!("{program} … {tail}")
 }
 
 /// Describes the processes `matches` accepts, if any: up to
@@ -766,7 +814,92 @@ fn resolve_root(id: CategoryId, ctx: &CleanContext) -> Resolution {
                 other => other,
             }
         }
+        CategoryId::GradleCache => {
+            let running = match ctx.gradle_running {
+                Some(true) => Some("a Gradle process".to_string()),
+                Some(false) => None,
+                None => running_gradle(),
+            };
+            if let Some(what) = running {
+                return Resolution::Refused(format!(
+                    "Gradle is running ({what}); stop its daemons with `gradle --stop` (or \
+                     `./gradlew --stop`) and let builds finish before cleaning its caches"
+                ));
+            }
+            let notes = gradle_home_settings(|k| {
+                std::env::var_os(k).map(|v| v.to_string_lossy().into_owned())
+            });
+            let expected = ctx.home.join(".gradle/caches");
+            match finish_resolution(
+                expected.clone(),
+                "Gradle default location".into(),
+                &ctx.home,
+            ) {
+                Resolution::Root { path, .. } if path != expected => Resolution::Refused(format!(
+                    "{} resolves to {}; Gradle caches reached through a symbolic link are not \
+                     supported",
+                    expected.display(),
+                    path.display()
+                )),
+                Resolution::Root { path, source, .. } => Resolution::Root {
+                    path,
+                    source,
+                    notes,
+                },
+                other => other,
+            }
+        }
     }
+}
+
+/// Other Gradle user homes Gradle may be configured with: `GRADLE_USER_HOME`,
+/// or `-Dgradle.user.home` in `GRADLE_OPTS`. Each one found becomes a
+/// note; MacClean does not follow them.
+fn gradle_home_settings(env: impl Fn(&str) -> Option<String>) -> Vec<String> {
+    let mut notes = Vec::new();
+    if let Some(v) = env("GRADLE_USER_HOME").filter(|v| !v.is_empty()) {
+        notes.push(format!(
+            "$GRADLE_USER_HOME sets Gradle's home to `{v}`; MacClean cleans only ~/.gradle/caches"
+        ));
+    }
+    if let Some(v) = env("GRADLE_OPTS").filter(|v| v.contains("gradle.user.home")) {
+        notes.push(format!(
+            "$GRADLE_OPTS sets gradle.user.home (`{v}`); MacClean cleans only ~/.gradle/caches"
+        ));
+    }
+    notes
+}
+
+/// Gradle's cache entries that are safe to delete: version-specific caches
+/// (`9.6.1`, `8.11-rc-1`) and the shared caches it rebuilds or downloads
+/// again (`modules-2`, `jars-9`, `transforms-4`, `build-cache-1`).
+fn is_gradle_cache_entry(name: &str) -> bool {
+    let numbered = |prefix: &str| {
+        name.strip_prefix(prefix)
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    if name == "modules-2"
+        || numbered("jars-")
+        || numbered("transforms-")
+        || numbered("build-cache-")
+    {
+        return true;
+    }
+    // A Gradle version: major.minor[.patch][-suffix], digits first.
+    let (version, suffix) = match name.split_once('-') {
+        Some((v, s)) => (v, Some(s)),
+        None => (name, None),
+    };
+    let parts: Vec<&str> = version.split('.').collect();
+    (2..=3).contains(&parts.len())
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && suffix.is_none_or(|s| {
+            !s.is_empty()
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'+')
+        })
 }
 
 /// Other cache locations Homebrew may be configured with: `HOMEBREW_CACHE`
@@ -853,6 +986,8 @@ const PIP_ENTRIES: [&str; 3] = ["http", "http-v2", "wheels"];
 /// Homebrew keeps every download, content-addressed, in `downloads`; the
 /// other entries point into it or are not downloads.
 const HOMEBREW_ENTRIES: [&str; 1] = ["downloads"];
+/// Entries every Gradle user home's `caches` has; one of them must exist.
+const GRADLE_SIGNATURE: [&str; 3] = ["modules-2", "journal-1", "CACHEDIR.TAG"];
 const XCODE_CACHE_DIRS: [&str; 3] = [
     "ModuleCache.noindex",
     "SymbolCache.noindex",
@@ -904,6 +1039,13 @@ fn classify(id: CategoryId, name: &OsStr, meta: &Meta, uid: u32) -> Verdict {
                 Verdict::safe(format!("pip cache `{name}` directory"))
             } else {
                 Verdict::review("not part of pip's cache layout; left untouched")
+            }
+        }
+        CategoryId::GradleCache => {
+            if meta.kind == FileKind::Dir && is_gradle_cache_entry(name) {
+                Verdict::safe(format!("Gradle cache `{name}`"))
+            } else {
+                Verdict::review("not a cache Gradle rebuilds; left untouched")
             }
         }
         CategoryId::HomebrewCache => {
@@ -1172,6 +1314,7 @@ fn plan_category(id: CategoryId, ctx: &CleanContext, cutoff_ns: i128) -> Categor
         CategoryId::NpmCache => &["content-v2", "index-v5"],
         CategoryId::PipCache => &PIP_ENTRIES,
         CategoryId::HomebrewCache => &HOMEBREW_ENTRIES,
+        CategoryId::GradleCache => &GRADLE_SIGNATURE,
         CategoryId::XcodeDerivedData => &[],
     };
     if !signature.is_empty() && !names.iter().any(|n| signature.iter().any(|s| n == s)) {
@@ -1431,8 +1574,96 @@ mod tests {
         let long = "a".repeat(300);
         assert_eq!(
             command_line(OsStr::new("x"), &os(&[&long])).chars().count(),
-            121
+            120
         );
+        let jvm = command_line(
+            OsStr::new("java"),
+            &os(&[
+                "/opt/homebrew/opt/openjdk/bin/java",
+                &"--add-opens=java.base/java.lang=ALL-UNNAMED ".repeat(5),
+                "org.gradle.launcher.daemon.bootstrap.GradleDaemon",
+                "9.6.1",
+            ]),
+        );
+        assert!(jvm.starts_with("java … "), "{jvm}");
+        assert!(jvm.ends_with("GradleDaemon 9.6.1"), "{jvm}");
+    }
+
+    #[test]
+    fn gradle_processes_and_entries() {
+        let is_gradle = |cmd: &[&str]| {
+            let cmd: Vec<OsString> = cmd.iter().map(OsString::from).collect();
+            is_gradle_process(OsStr::new("java"), &cmd)
+        };
+        assert!(is_gradle(&[
+            "/opt/homebrew/opt/openjdk/bin/java",
+            "-Xmx512m",
+            "-cp",
+            "/x/gradle-daemon-main-9.6.1.jar",
+            "org.gradle.launcher.daemon.bootstrap.GradleDaemon",
+            "9.6.1"
+        ]));
+        assert!(is_gradle(&[
+            "java",
+            "-cp",
+            "gradle/wrapper/gradle-wrapper.jar",
+            "org.gradle.wrapper.GradleWrapperMain",
+            "build"
+        ]));
+        assert!(is_gradle(&[
+            "java",
+            "org.gradle.launcher.GradleMain",
+            "--no-daemon"
+        ]));
+        assert!(!is_gradle(&[
+            "java",
+            "-jar",
+            "app.jar",
+            "org.gradle.Something"
+        ]));
+        assert!(!is_gradle(&[
+            "java",
+            "org.jetbrains.kotlin.daemon.KotlinCompileDaemon"
+        ]));
+
+        for ok in [
+            "9.6.1",
+            "8.10",
+            "8.11-rc-1",
+            "7.6.4-20231010000000+0000",
+            "modules-2",
+            "jars-9",
+            "transforms-4",
+            "build-cache-1",
+        ] {
+            assert!(is_gradle_cache_entry(ok), "{ok}");
+        }
+        for no in [
+            "journal-1",
+            "CACHEDIR.TAG",
+            "9",
+            "9.6.1.2",
+            "v9.6",
+            "9.x",
+            "9.6-",
+            "jars-",
+            "jars-x",
+            "modules-3",
+            "daemon",
+            "native",
+            "kotlin-dsl",
+            "..",
+            "",
+        ] {
+            assert!(!is_gradle_cache_entry(no), "{no}");
+        }
+        let env = |k: &str| match k {
+            "GRADLE_USER_HOME" => Some("/Volumes/Ext/gradle".to_string()),
+            "GRADLE_OPTS" => Some("-Dgradle.user.home=/x -Xmx1g".to_string()),
+            _ => None,
+        };
+        assert_eq!(gradle_home_settings(env).len(), 2);
+        assert!(gradle_home_settings(|_| None).is_empty());
     }
 
     #[test]

@@ -24,7 +24,8 @@ MacClean needs no administrator rights. It never runs `sudo` and never follows s
 | Full-screen live TUI for `monitor` | Planned |
 | `clean --category pip-cache`: pip's HTTP and wheel caches | Implemented, tested (synthetic cache; no pip cache on the development Mac) |
 | `clean --category homebrew-cache`: Homebrew's downloads | Implemented, tested (synthetic cache, plus a dry run against the development Mac's real cache) |
-| More cache categories (Gradle, CocoaPods, Yarn/pnpm, …) | Planned, each needs its own policy and tests first |
+| `clean --category gradle-cache`: Gradle's caches | Implemented, tested (synthetic cache, plus a real Gradle 9.6.1 cache cleaned and rebuilt) |
+| More cache categories (CocoaPods, Yarn/pnpm, …) | Planned, each needs its own policy and tests first |
 | Universal (fat) binary | Implemented: built with `lipo` from the two tested binaries in the release workflow, and smoke-tested natively on Apple Silicon, under Rosetta 2 and natively on Intel |
 | Custom Xcode DerivedData location (Xcode → Settings → Locations) | Implemented, tested; a per-workspace (relative) location is refused |
 | Arbitrary path deletion | Deliberately not supported |
@@ -122,7 +123,7 @@ macclean --help
 macclean --version
 macclean status [--format text|json]
 macclean analyze [PATHS]... [--top N] [--sort allocated|logical] [--max-depth N] [--exclude GLOB]... [--include-cloud] [--cross-mounts] [--format text|json]
-macclean clean [--category npm-cache|xcode-derived-data|pip-cache|homebrew-cache]... [--dry-run | --interactive] [--format text|json]
+macclean clean [--category npm-cache|xcode-derived-data|pip-cache|homebrew-cache|gradle-cache]... [--dry-run | --interactive] [--format text|json]
 macclean monitor [--interval SECS] [--count N] [--top N] [--sort cpu|memory|footprint] [--format text|json]
 macclean report [--path PATH]... [--top N] [--format text|json]
 ```
@@ -243,6 +244,15 @@ Disk "available" comes from `statfs(2)` and excludes APFS purgeable space, so Fi
 * **When it refuses:** while `brew` is running (its `bash … bin/brew` or `ruby … brew.rb` process), checked when planning and again just before deleting; when there is no `downloads` folder; and when the cache is a symbolic link or reached through one.
 * **What it never touches:** `api` (the formula and cask index), `bootsnap`, `Cask`, the links, `portable-ruby-*.tar.gz` and any other entry, which are listed as "review".
 
+### `gradle-cache`
+
+* **What it deletes:** entries directly inside `~/.gradle/caches` that Gradle rebuilds or downloads again: version-specific caches (`9.6.1`, `8.11-rc-1`, …), downloaded dependencies (`modules-2`) and the shared `jars-N`, `transforms-N` and `build-cache-N` caches. Gradle itself deletes version-specific caches after 30 days without use. Gradle has no command that empties these caches.
+* **What it costs:** the next build recreates them, and needs network access to download dependencies again. Offline builds fail until then.
+* **Where it is:** only the default Gradle user home, `~/.gradle`. `GRADLE_USER_HOME` or `-Dgradle.user.home` in `GRADLE_OPTS` is shown as a note, not followed.
+* **When it refuses:** while any Gradle daemon, build or wrapper is running, including Android Studio's daemon. They are recognized by Gradle's main classes in a Java process's arguments, and checked when planning and again just before deleting. A Gradle daemon stays alive for up to 3 hours after a build, so stop it first with `gradle --stop` (or `./gradlew --stop` in a project). It also refuses when `caches` holds none of `modules-2`, `journal-1` or `CACHEDIR.TAG`, and when it is a symbolic link or reached through one.
+* **What it never touches:** `journal-1`, `CACHEDIR.TAG` and unknown entries in `caches` (listed as "review"), and everything else in `~/.gradle`: daemon logs, `native`, downloaded JDKs, wrapper distributions and `gradle.properties`.
+* **Checked on a real cache:** on the development Mac, MacClean cleaned a real Gradle 9.6.1 cache in a temporary home folder (33 files, 190.9 MB). Gradle then built the same project again offline and recreated the caches.
+
 ## Security model
 
 Filesystem safety is treated as a requirement that blocks a release.
@@ -269,6 +279,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 * If a file is swapped for another regular file between the per-file check and the `unlink`, MacClean removes the new directory entry. That entry is still inside the verified cache directory.
 * The npm-running check looks at process names and command lines. It misses npm started under another name (a renamed binary, a wrapper that is not `node`, Bun) or right after the last check. Files npm writes after the plan was created are still skipped by the change-time rule.
 * An npm cache set on npm's command line (`--cache`) or only in a project `.npmrc` is not cleaned; the project setting is reported.
+* Gradle caches in another Gradle user home (`GRADLE_USER_HOME`) are not cleaned; only `~/.gradle/caches` is.
 * A Homebrew cache moved with `HOMEBREW_CACHE` is not cleaned; only `~/Library/Caches/Homebrew` is, and settings MacClean can see are reported.
 * A pip cache moved with `PIP_CACHE_DIR` or a `cache-dir` setting is not cleaned; only `~/Library/Caches/pip` is. Settings MacClean can see are reported. A `cache-dir` in the `pip.conf` of one Python installation or virtual environment is not seen.
 * No external security audit has been performed.
@@ -291,7 +302,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 sh scripts/check.sh
 ```
 
-The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (104 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (109 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
 
 * size calculations, directory aggregation, top-N limits, hard links
 * permission failures, files disappearing mid-scan, symlink roots and loops
@@ -300,7 +311,7 @@ The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
 * symlinks inside candidates, symlinked candidates and roots, ancestors swapped after planning
 * roots or candidates replaced between plan and execution, files changed or added after planning
 * partial failures from unwritable directories, with accurate byte reporting
-* Xcode, a package manager, pip or brew running (at planning and at execution), recognition of npm/npx/yarn/pnpm, pip and brew processes, roots owned by another user, missing categories
+* Xcode, a package manager, pip, brew or Gradle running (at planning and at execution), recognition of npm/npx/yarn/pnpm, pip, brew and Gradle processes, roots owned by another user, missing categories
 * CLI argument validation, exit codes, JSON validity, refusal without a TTY (including piped `yes`)
 * the monitor's ranges, sorting and process visibility
 * property tests (proptest) for the root policy: random component sequences, `..`, Unicode and case look-alikes, look-alike home folders such as `/Users/ann2`, and validity carrying over to subfolders

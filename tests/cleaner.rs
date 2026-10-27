@@ -91,6 +91,26 @@ impl Fixture {
             120,
         );
         f.file(&format!("{brew}/.cleaned"), 0);
+        // Gradle user home, laid out like a real one (Gradle 9.6.1).
+        let g = ".gradle/caches";
+        f.file(&format!("{g}/9.6.1/fileHashes/fileHashes.bin"), 3000);
+        f.file(
+            &format!("{g}/9.6.1/generated-gradle-jars/gradle-api.jar"),
+            7000,
+        );
+        f.file(
+            &format!("{g}/modules-2/files-2.1/com.x/lib/1.0/abc/lib-1.0.jar"),
+            2000,
+        );
+        f.file(&format!("{g}/modules-2/metadata-2.107/descriptors/x"), 100);
+        f.file(&format!("{g}/jars-9/0123/plugin.jar"), 500);
+        f.file(&format!("{g}/transforms-4/0123/out.jar"), 400);
+        f.file(&format!("{g}/journal-1/file-access.bin"), 50);
+        f.file(&format!("{g}/CACHEDIR.TAG"), 43);
+        f.file(&format!("{g}/mystery/data"), 9);
+        f.file(".gradle/daemon/9.6.1/daemon-1.out.log", 30);
+        f.file(".gradle/wrapper/dists/gradle-9.6.1-bin/x/gradle.zip", 80);
+        f.file(".gradle/gradle.properties", 20);
         f
     }
 
@@ -113,6 +133,7 @@ impl Fixture {
             package_manager_running: Some(false),
             pip_running: Some(false),
             brew_running: Some(false),
+            gradle_running: Some(false),
             derived_data: DerivedDataSetting::Given(PrefValue::Missing),
         }
     }
@@ -136,6 +157,12 @@ impl Fixture {
             "Library/Caches/Homebrew/api/formula_names.txt",
             "Library/Caches/Homebrew/portable-ruby-4.0.7.arm64_big_sur.bottle.tar.gz",
             "Library/Caches/Homebrew/.cleaned",
+            ".gradle/caches/journal-1/file-access.bin",
+            ".gradle/caches/CACHEDIR.TAG",
+            ".gradle/caches/mystery/data",
+            ".gradle/daemon/9.6.1/daemon-1.out.log",
+            ".gradle/wrapper/dists/gradle-9.6.1-bin/x/gradle.zip",
+            ".gradle/gradle.properties",
         ] {
             assert!(self.p(rel).exists(), "{rel} must not be deleted");
         }
@@ -398,6 +425,9 @@ fn symlinked_category_roots_are_refused() {
     fs::rename(f.p("Library/Caches/Homebrew"), f.p("brew-elsewhere")).unwrap();
     symlink(f.p("brew-elsewhere"), f.p("Library/Caches/Homebrew")).unwrap();
 
+    fs::rename(f.p(".gradle/caches"), f.p("gradle-elsewhere")).unwrap();
+    symlink(f.p("gradle-elsewhere"), f.p(".gradle/caches")).unwrap();
+
     let plan = f.plan(&CategoryId::ALL);
     for c in &plan.categories {
         assert_eq!(c.state, CategoryState::Refused, "{:?}", c.category);
@@ -634,6 +664,7 @@ fn missing_categories_are_reported_not_present() {
         package_manager_running: Some(false),
         pip_running: Some(false),
         brew_running: Some(false),
+        gradle_running: Some(false),
         derived_data: DerivedDataSetting::Given(PrefValue::Missing),
     };
     let plan = cleaner::plan(&CategoryId::ALL, &ctx);
@@ -1007,4 +1038,108 @@ fn homebrew_cache_settings_are_reported_not_followed() {
         "{:?}",
         c.notes
     );
+}
+
+fn gradle(outcome: &CleanOutcome) -> &cleaner::CategoryOutcome {
+    outcome
+        .categories
+        .iter()
+        .find(|c| c.category == CategoryId::GradleCache)
+        .unwrap()
+}
+
+#[test]
+fn gradle_cache_deletes_only_rebuildable_caches() {
+    let f = Fixture::new();
+    let root = f.p(".gradle/caches");
+    let plan = f.plan(&[CategoryId::GradleCache]);
+    let c = &plan.categories[0];
+    assert_eq!(c.state, CategoryState::Ready, "{c:#?}");
+    let mut names: Vec<_> = c
+        .candidates
+        .iter()
+        .map(|c| c.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["9.6.1", "jars-9", "modules-2", "transforms-4"]);
+    assert_eq!(
+        c.estimate.logical_bytes,
+        3000 + 7000 + 2000 + 100 + 500 + 400
+    );
+    let review: Vec<_> = c.not_eligible.iter().map(|r| r.path.clone()).collect();
+    for kept in ["CACHEDIR.TAG", "journal-1", "mystery"] {
+        assert!(review.contains(&root.join(kept)), "{kept}: {review:?}");
+    }
+
+    let out = cleaner::execute(&plan, &f.ctx());
+    assert!(!out.is_partial(), "{out:#?}");
+    assert_eq!(gradle(&out).removed.logical_bytes, 13_000);
+    for gone in ["9.6.1", "jars-9", "modules-2", "transforms-4"] {
+        assert!(!root.join(gone).exists(), "{gone}");
+    }
+    assert!(root.is_dir());
+    f.assert_survivors();
+}
+
+#[test]
+fn gradle_running_refuses_gradle_cache() {
+    let f = Fixture::new();
+    let mut ctx = f.ctx();
+    ctx.gradle_running = Some(true);
+    let plan = cleaner::plan(&[CategoryId::GradleCache], &ctx);
+    let reason = plan.categories[0].state_reason.clone().unwrap();
+    assert_eq!(plan.categories[0].state, CategoryState::Refused);
+    assert!(reason.contains("gradle --stop"), "{reason}");
+    let plan = f.plan(&[CategoryId::GradleCache]);
+    let out = cleaner::execute(&plan, &ctx);
+    assert!(gradle(&out).refused.is_some());
+    assert!(
+        f.p(".gradle/caches/modules-2/files-2.1/com.x/lib/1.0/abc/lib-1.0.jar")
+            .exists()
+    );
+    f.assert_survivors();
+}
+
+#[test]
+fn unrecognized_gradle_layout_is_refused() {
+    let f = Fixture::new();
+    for d in ["modules-2", "journal-1"] {
+        fs::remove_dir_all(f.p(&format!(".gradle/caches/{d}"))).unwrap();
+    }
+    fs::remove_file(f.p(".gradle/caches/CACHEDIR.TAG")).unwrap();
+    let plan = f.plan(&[CategoryId::GradleCache]);
+    assert_eq!(plan.categories[0].state, CategoryState::Refused);
+    assert!(plan.categories[0].candidates.is_empty());
+    cleaner::execute(&plan, &f.ctx());
+    assert!(
+        f.p(".gradle/caches/9.6.1/fileHashes/fileHashes.bin")
+            .exists()
+    );
+    assert!(f.p(".gradle/caches/mystery/data").exists());
+}
+
+#[test]
+fn gradle_cache_links_never_reach_their_targets() {
+    let f = Fixture::new();
+    let root = f.p(".gradle/caches");
+    symlink(f.p("Documents"), root.join("modules-2/files-2.1/docs-link")).unwrap();
+    fs::hard_link(f.p("Documents/important.txt"), root.join("jars-9/hardlink")).unwrap();
+    // A symlinked version directory is forbidden, not followed.
+    fs::create_dir_all(f.p("elsewhere-8.0")).unwrap();
+    fs::write(f.p("elsewhere-8.0/keep"), b"k").unwrap();
+    symlink(f.p("elsewhere-8.0"), root.join("8.0")).unwrap();
+
+    let plan = f.plan(&[CategoryId::GradleCache]);
+    assert!(
+        plan.categories[0]
+            .not_eligible
+            .iter()
+            .any(|r| r.path == root.join("8.0") && r.risk == macclean::policy::Risk::Forbidden)
+    );
+    let out = cleaner::execute(&plan, &f.ctx());
+    assert_eq!(gradle(&out).removed.symlinks, 1);
+    assert!(root.join("jars-9/hardlink").exists());
+    assert!(f.p("elsewhere-8.0/keep").exists());
+    assert_eq!(fs::read(f.p("Documents/important.txt")).unwrap().len(), 44);
+    f.assert_survivors();
 }
