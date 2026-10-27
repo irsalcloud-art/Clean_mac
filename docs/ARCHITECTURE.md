@@ -4,7 +4,7 @@ MacClean is a single Rust crate, built as a library (`src/lib.rs`) with a thin b
 
 ```
 main.rs ─► cli ─┬─► scanner ─────────────► platform::fsops (read)
-                ├─► cleaner ─► policy
+                ├─► cleaner ─► policy, npm_config
                 │      └───────────────────► platform::fsops (read + delete)
                 ├─► monitor ─► sysinfo, platform (sysctl)
                 └─► report  (text / JSON rendering of every result)
@@ -18,6 +18,7 @@ main.rs ─► cli ─┬─► scanner ─────────────�
 | `cli` | clap argument parsing, command dispatch, the `yes` confirmation prompt, exit codes | No |
 | `scanner` | `analyze`: walks the given roots with `lstat` semantics and keeps the top N files and directories in bounded heaps | No |
 | `cleaner` | Category definitions, root resolution, classification, planning (`plan`) and guarded deletion (`execute`) | Only in `execute` |
+| `npm_config` | Finds npm's cache directory from the environment and the user, global and builtin npmrc files in npm's order, without running npm | No |
 | `policy` | Protected locations, sensitive subtrees, `validate_category_root`, the `Risk`/`Verdict` types | No |
 | `platform` | sysctl, `statfs`, uid, home directory, TTY checks, architecture and Rosetta detection | No |
 | `platform::fsops` | Descriptor-relative primitives: `open_dir_nofollow`, `open_dir_at`, `stat_at`, `read_dir_names`, `unlink_at`, `rmdir_at` | `unlink_at` and `rmdir_at` only |
@@ -31,7 +32,7 @@ Cleanup is split so that each stage can be checked on its own. Only the last sta
 
 ### 1. Resolve and validate the root
 
-`cleaner::resolve_root` finds each category's root directory. For `npm-cache` it refuses while npm, npx, yarn or pnpm is running (`running_package_manager`), then uses environment variables, then the user npmrc, then `~/.npm`. For `xcode-derived-data` it uses the fixed default location, and refuses while Xcode is running. `finish_resolution` refuses a root that is a symlink or not a directory, and canonicalizes it. Then `policy::validate_category_root` checks it:
+`cleaner::resolve_root` finds each category's root directory. For `npm-cache` it refuses while npm, npx, yarn or pnpm is running (`running_package_manager`), then asks `npm_config::detect_npm_cache_dir`, which follows npm's order: environment, user npmrc, global npmrc, builtin npmrc, `~/.npm`. A project `.npmrc` is only reported, as a note on the plan. For `xcode-derived-data` it uses the fixed default location, and refuses while Xcode is running. `finish_resolution` refuses a root that is a symlink or not a directory, and canonicalizes it. Then `policy::validate_category_root` checks it:
 
 * it must be an absolute path with no `.` or `..` components
 * it must lie strictly inside the canonical home directory

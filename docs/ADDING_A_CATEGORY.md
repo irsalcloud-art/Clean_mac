@@ -8,7 +8,7 @@ A category is accepted only if you can answer all of these with evidence such as
 
 | Question | Example (`npm-cache`) |
 |---|---|
-| Where is the root, and how is it found without running the tool? | `npm_config_cache`, then `cache=` in `~/.npmrc`, then `~/.npm`. Then `_cacache` inside it. |
+| Where is the root, and how is it found without running the tool? | `npm_config_cache`, then `cache=` in the user, global and builtin npmrc, then `~/.npm` (see `npm_config`). Then `_cacache` inside it. |
 | Which direct children of the root are safe to delete? List them by exact name or a strict pattern. | `content-v2`, `index-v5`, `tmp` |
 | What must never be touched, even though it lives nearby? | `_logs`, `_npx`, unknown entries |
 | How does the tool recover after deletion? | npm downloads packages again when it needs them |

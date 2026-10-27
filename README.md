@@ -171,12 +171,14 @@ Disk "available" comes from `statfs(2)` and excludes APFS purgeable space, so Fi
 ### `npm-cache`
 
 * **What it deletes:** `content-v2`, `index-v5` and `tmp` inside npm's `_cacache` directory. This is the content that `npm cache clean --force` removes. npm downloads packages again when it needs them.
-* **How the location is found** (npm itself is not run, because running it writes logs and may contact the registry):
+* **How the location is found** (npm itself is not run, because running it writes logs and may contact the registry). MacClean reads `cache` in npm's own order, and the plan shows which one decided:
   1. the `npm_config_cache` / `NPM_CONFIG_CACHE` environment variable,
-  2. `cache=` in the user npmrc (`$NPM_CONFIG_USERCONFIG` or `~/.npmrc`), with `~/` expanded,
-  3. the default `~/.npm`.
+  2. `cache=` in the user npmrc (`$NPM_CONFIG_USERCONFIG` or `~/.npmrc`),
+  3. `cache=` in the global npmrc: `$npm_config_globalconfig` or `globalconfig=`, otherwise `<prefix>/etc/npmrc`. The prefix comes from `$npm_config_prefix`, `prefix=` in the user npmrc or in npm's builtin npmrc (Homebrew sets `/opt/homebrew` there), `$PREFIX`, or two levels above the real path of `node` on `PATH`,
+  4. `cache=` in npm's builtin npmrc (`npmrc` inside the npm package found on `PATH`),
+  5. the default `~/.npm`.
 
-  Values that use `${VAR}` expansion, or relative paths, are refused. Project-level and global npmrc files are not read.
+  `~/` is expanded. Values that use `${VAR}` expansion, or relative paths, are refused. A project `.npmrc` (in the nearest folder above the current directory that has a `package.json` or `node_modules`) that sets `cache=` is reported as a note but not used: npm only uses it inside that project. If `node` is not on `PATH`, the global npmrc is skipped and the plan says so.
 * **When it refuses:** while npm, npx, yarn or pnpm is running. MacClean checks this when it plans and again just before it deletes. It recognizes a process named `npm`, `npx`, `yarn`, `yarnpkg`, `pnpm` or `pnpx`, and a `node` process whose script is one of those or `npm-cli.js`, `npx-cli.js`, `yarn.js`/`yarn.cjs` (including corepack) or `pnpm.cjs`/`pnpm.mjs`. npm renames its own process (`npm install`, `npm exec …`), and that form is recognized too. The refusal names the processes it found. A long-running `npx` or `npm exec` server (an MCP server, for example) also blocks the category until you quit it.
 * **What it never touches:** `_logs`, `_npx`, `_update-notifier-last-checked`, and any entry in `_cacache` it does not recognize. Those are listed as "review". If `_cacache` contains neither `content-v2` nor `index-v5`, the whole category is refused.
 * **Entries owned by another user** (usually left behind by `sudo npm …`) are skipped. The plan shows how many there are in one line instead of listing each path, and prints a command you can run yourself to take them back:
@@ -218,7 +220,8 @@ Filesystem safety is treated as a requirement that blocks a release.
 * Descriptor-relative deletion stops redirection through symlinks. It cannot stop a process running as **your own user** from moving a directory MacClean is in the middle of deleting to somewhere else. Such a process could delete those files itself anyway.
 * If a file is swapped for another regular file between the per-file check and the `unlink`, MacClean removes the new directory entry. That entry is still inside the verified cache directory.
 * The npm-running check looks at process names and command lines. It misses npm started under another name (a renamed binary, a wrapper that is not `node`, Bun) or right after the last check. Files npm writes after the plan was created are still skipped by the change-time rule.
-* npm configuration in project-level or global npmrc files, and a custom Xcode DerivedData location set in Xcode preferences, are not detected.
+* A custom Xcode DerivedData location set in Xcode preferences is not detected.
+* An npm cache set on npm's command line (`--cache`) or only in a project `.npmrc` is not cleaned; the project setting is reported.
 * No external security audit has been performed.
 
 ## System monitor
@@ -235,7 +238,7 @@ Filesystem safety is treated as a requirement that blocks a release.
 sh scripts/check.sh
 ```
 
-The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (65 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (71 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
 
 * size calculations, directory aggregation, top-N limits, hard links
 * permission failures, files disappearing mid-scan, symlink roots and loops
@@ -264,7 +267,7 @@ Memory stays flat as the tree grows, because the scanner keeps only the top-N re
 
 * The development shell named in the brief (Rush) was not installed in the build environment. All commands were run with zsh and Cargo, and `scripts/check.sh` is plain POSIX `sh`. MacClean does not need Rush at runtime.
 * Dependencies: `clap` (CLI), `serde`/`serde_json` (JSON), `sysinfo` (CPU/memory/process metrics, `system` feature only), `thiserror` (errors), `libc` (`openat`/`fstatat`/`unlinkat`/`statfs`/`sysctl`), and `tempfile` (tests only).
-* Modules: `cli`, `scanner`, `cleaner`, `policy`, `monitor`, `platform` (with `platform::fsops`), `report`, `errors`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how they fit together.
+* Modules: `cli`, `scanner`, `cleaner`, `npm_config`, `policy`, `monitor`, `platform` (with `platform::fsops`), `report`, `errors`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how they fit together.
 
 ## Contributing
 

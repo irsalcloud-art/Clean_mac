@@ -7,6 +7,7 @@ pub mod cleaner;
 pub mod cli;
 pub mod errors;
 pub mod monitor;
+pub mod npm_config;
 pub mod platform;
 pub mod policy;
 pub mod report;

@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Open-source project files: dual MIT/Apache-2.0 license, contributing guide, code of conduct, security policy, issue and pull request templates, and architecture docs.
 
 ### Changed
+- npm cache detection now also reads the global npmrc (`globalconfig`, or `<prefix>/etc/npmrc` with the prefix found the way npm finds it, including Homebrew's) and npm's builtin npmrc, in npm's documented order. A project `.npmrc` that sets `cache=` is reported as a note on the plan but not used ([#10](https://github.com/irsalcloud-art/Clean_mac/issues/10)).
 - `clean` groups entries owned by another user (often left by `sudo npm`) into one line with a count and a `sudo chown` command to run yourself, instead of listing every path. JSON output adds `foreign_owned` to each tally and `root` to each category result ([#5](https://github.com/irsalcloud-art/Clean_mac/issues/5)).
 - `clean` refuses the `npm-cache` category while npm, npx, yarn or pnpm is running, both when planning and again just before deleting, so an active `npm install` is not broken ([#3](https://github.com/irsalcloud-art/Clean_mac/issues/3)).
 - The supported minimum is now documented as macOS 15. Binaries still target macOS 11.0, but macOS 11–14 have no recorded test run ([#2](https://github.com/irsalcloud-art/Clean_mac/issues/2)).

@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 use crate::errors::{MacCleanError, Result};
+use crate::npm_config;
 use crate::platform::fsops::{self, FileId, FileKind, Meta, borrow};
 use crate::platform::{self, VolumeStats};
 use crate::policy::{self, Risk, Verdict};
@@ -64,7 +65,7 @@ impl CategoryId {
 
 #[derive(Debug, Clone)]
 pub enum NpmCacheSource {
-    /// Read npm's configuration files and environment (see [`detect_npm_cache_dir`]).
+    /// Read npm's configuration files and environment (see [`npm_config::detect_npm_cache_dir`]).
     Detect,
     /// Use this npm cache directory (the parent of `_cacache`).
     Explicit(PathBuf),
@@ -231,6 +232,9 @@ pub struct CategoryPlan {
     pub root_id: Option<FileId>,
     pub candidates: Vec<Candidate>,
     pub not_eligible: Vec<ReviewItem>,
+    /// Settings that were noticed but not used (for example a project npmrc).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     pub estimate: Tally,
 }
 
@@ -296,88 +300,14 @@ fn now_ns() -> i128 {
 // ---------------------------------------------------------------------------
 
 enum Resolution {
-    Root { path: PathBuf, source: String },
+    Root {
+        path: PathBuf,
+        source: String,
+        /// Settings that were noticed but not used, shown with the plan.
+        notes: Vec<String>,
+    },
     NotPresent(String),
     Refused(String),
-}
-
-/// Parses the value of a `cache=` line from npmrc-style text. The last
-/// assignment wins, as in npm's ini parser.
-fn npmrc_cache_value(text: &str) -> Option<String> {
-    let mut found = None;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
-            continue;
-        }
-        if let Some((key, value)) = line.split_once('=')
-            && key.trim().eq_ignore_ascii_case("cache")
-        {
-            let v = value.trim();
-            let v = v
-                .strip_prefix('"')
-                .and_then(|v| v.strip_suffix('"'))
-                .unwrap_or(v);
-            found = Some(v.to_string());
-        }
-    }
-    found
-}
-
-/// Turns a configured cache value into an absolute path, or explains why
-/// it is too ambiguous to act on.
-fn npm_cache_value_to_path(value: &str, home: &Path) -> std::result::Result<PathBuf, String> {
-    if value.contains("${") {
-        return Err(format!(
-            "npm cache setting `{value}` uses variable expansion, which MacClean does not evaluate"
-        ));
-    }
-    let path = if value == "~" {
-        home.to_path_buf()
-    } else if let Some(rest) = value.strip_prefix("~/") {
-        home.join(rest)
-    } else {
-        PathBuf::from(value)
-    };
-    if !path.is_absolute() {
-        return Err(format!(
-            "npm cache setting `{value}` is not an absolute path"
-        ));
-    }
-    Ok(path)
-}
-
-/// Resolves npm's cache directory the way npm does for a user, without
-/// running npm (which writes logs and may contact the registry):
-/// `npm_config_cache` environment variable, then the user npmrc
-/// (`$NPM_CONFIG_USERCONFIG` or `~/.npmrc`), then `~/.npm`.
-/// Project-level and global npmrc files are not consulted.
-pub fn detect_npm_cache_dir(
-    home: &Path,
-    env: impl Fn(&str) -> Option<String>,
-) -> std::result::Result<(PathBuf, String), String> {
-    for var in ["npm_config_cache", "NPM_CONFIG_CACHE"] {
-        if let Some(v) = env(var).filter(|v| !v.is_empty()) {
-            return npm_cache_value_to_path(&v, home).map(|p| (p, format!("${var}")));
-        }
-    }
-    let userconfig = ["npm_config_userconfig", "NPM_CONFIG_USERCONFIG"]
-        .iter()
-        .find_map(|v| env(v).filter(|v| !v.is_empty()))
-        .map(|v| npm_cache_value_to_path(&v, home))
-        .transpose()?
-        .unwrap_or_else(|| home.join(".npmrc"));
-    match std::fs::read_to_string(&userconfig) {
-        Ok(text) => {
-            if let Some(v) = npmrc_cache_value(&text) {
-                return npm_cache_value_to_path(&v, home)
-                    .map(|p| (p, format!("cache= in {}", userconfig.display())));
-            }
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("cannot read {}: {e}", userconfig.display())),
-    }
-    Ok((home.join(".npm"), "npm default ~/.npm".to_string()))
 }
 
 fn xcode_is_running() -> bool {
@@ -511,6 +441,7 @@ fn finish_resolution(root: PathBuf, source: String, home: &Path) -> Resolution {
     Resolution::Root {
         path: canonical,
         source,
+        notes: Vec::new(),
     }
 }
 
@@ -528,13 +459,14 @@ fn resolve_root(id: CategoryId, ctx: &CleanContext) -> Resolution {
                      quit it before cleaning the npm cache"
                 ));
             }
-            let (dir, source) = match &ctx.npm_cache {
-                NpmCacheSource::Explicit(p) => (p.clone(), "configured".to_string()),
+            let (dir, source, notes) = match &ctx.npm_cache {
+                NpmCacheSource::Explicit(p) => (p.clone(), "configured".to_string(), Vec::new()),
                 NpmCacheSource::Detect => {
-                    match detect_npm_cache_dir(&ctx.home, |k| {
+                    let cwd = std::env::current_dir().ok();
+                    match npm_config::detect_npm_cache_dir(&ctx.home, cwd.as_deref(), |k| {
                         std::env::var_os(k).map(|v| v.to_string_lossy().into_owned())
                     }) {
-                        Ok(found) => found,
+                        Ok(found) => (found.dir, found.source, found.notes),
                         Err(why) => return Resolution::Refused(why),
                     }
                 }
@@ -545,7 +477,14 @@ fn resolve_root(id: CategoryId, ctx: &CleanContext) -> Resolution {
                     dir.display()
                 ));
             }
-            finish_resolution(dir.join("_cacache"), source, &ctx.home)
+            match finish_resolution(dir.join("_cacache"), source, &ctx.home) {
+                Resolution::Root { path, source, .. } => Resolution::Root {
+                    path,
+                    source,
+                    notes,
+                },
+                other => other,
+            }
         }
         CategoryId::XcodeDerivedData => {
             let running = ctx.xcode_running.unwrap_or_else(xcode_is_running);
@@ -810,10 +749,18 @@ fn plan_category(id: CategoryId, ctx: &CleanContext, cutoff_ns: i128) -> Categor
         root_id: None,
         candidates: Vec::new(),
         not_eligible: Vec::new(),
+        notes: Vec::new(),
         estimate: Tally::default(),
     };
     let (root, source) = match resolve_root(id, ctx) {
-        Resolution::Root { path, source } => (path, source),
+        Resolution::Root {
+            path,
+            source,
+            notes,
+        } => {
+            plan.notes = notes;
+            (path, source)
+        }
         Resolution::NotPresent(why) => {
             plan.state = CategoryState::NotPresent;
             plan.state_reason = Some(why);
@@ -1068,51 +1015,6 @@ pub fn execute(plan: &CleanPlan, ctx: &CleanContext) -> CleanOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn npm_cache_detection_order() {
-        let home = Path::new("/Users/ann");
-        let none = |_: &str| None;
-        assert_eq!(
-            detect_npm_cache_dir(home, none).unwrap().0,
-            home.join(".npm")
-        );
-        let env = |k: &str| (k == "npm_config_cache").then(|| "~/caches/npm".to_string());
-        assert_eq!(
-            detect_npm_cache_dir(home, env).unwrap().0,
-            home.join("caches/npm")
-        );
-        let rel = |k: &str| (k == "npm_config_cache").then(|| "relative/npm".to_string());
-        assert!(detect_npm_cache_dir(home, rel).is_err());
-        let var = |k: &str| (k == "NPM_CONFIG_CACHE").then(|| "${HOME}/x".to_string());
-        assert!(detect_npm_cache_dir(home, var).is_err());
-    }
-
-    #[test]
-    fn npmrc_parsing() {
-        assert_eq!(
-            npmrc_cache_value("registry=x\ncache=/a/b\n"),
-            Some("/a/b".into())
-        );
-        assert_eq!(
-            npmrc_cache_value("cache = \"/a b\"\n; cache=/no\n"),
-            Some("/a b".into())
-        );
-        assert_eq!(
-            npmrc_cache_value("cache=/one\nCACHE=/two"),
-            Some("/two".into())
-        );
-        assert_eq!(npmrc_cache_value("# cache=/x\ncache-min=10"), None);
-    }
-
-    #[test]
-    fn npmrc_file_is_used() {
-        let t = tempfile::tempdir().unwrap();
-        std::fs::write(t.path().join(".npmrc"), "cache=~/custom-npm\n").unwrap();
-        let (dir, source) = detect_npm_cache_dir(t.path(), |_| None).unwrap();
-        assert_eq!(dir, t.path().join("custom-npm"));
-        assert!(source.contains(".npmrc"));
-    }
 
     #[test]
     fn package_manager_processes() {

@@ -379,6 +379,9 @@ pub fn render_plan(w: &mut dyn Write, p: &CleanPlan) -> io::Result<()> {
                     .unwrap_or_default()
             )?;
         }
+        for note in &c.notes {
+            writeln!(w, "  Note: {note}")?;
+        }
         match c.state {
             CategoryState::NotPresent => {
                 writeln!(w, "  Not present: {}", opt(&c.state_reason))?;
@@ -650,6 +653,7 @@ mod tests {
                     risk: crate::policy::Risk::Forbidden,
                     reason: OWNED_BY_ANOTHER_USER.into(),
                 }],
+                notes: Vec::new(),
                 estimate: estimate.clone(),
             }],
         };
