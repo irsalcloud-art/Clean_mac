@@ -23,7 +23,7 @@ MacClean needs no administrator rights. It never runs `sudo` and never follows s
 | `report`: combined status, cleanup plan and optional analysis | Implemented, tested |
 | Full-screen live TUI for `monitor` | Planned |
 | More cache categories (Homebrew, pip, Gradle, CocoaPods, …) | Planned, each needs its own policy and tests first |
-| Universal (fat) binary | Planned, after the x86_64 build is validated on Intel hardware |
+| Universal (fat) binary | In the release workflow: built with `lipo` from the two tested binaries and smoke-tested natively on Apple Silicon, under Rosetta 2 and natively on Intel. No release published yet |
 | Custom Xcode DerivedData location (Xcode → Settings → Locations) | Implemented, tested; a per-workspace (relative) location is refused |
 | Arbitrary path deletion | Deliberately not supported |
 
@@ -48,7 +48,7 @@ The binary links only system libraries (libSystem, CoreFoundation, IOKit, libico
 
 ## Install a release
 
-Releases on the [Releases page](https://github.com/irsalcloud-art/Clean_mac/releases) have one archive per architecture, `macclean-<version>-aarch64-apple-darwin.tar.gz` (Apple Silicon) and `macclean-<version>-x86_64-apple-darwin.tar.gz` (Intel), and a `SHA256SUMS` file. Each archive holds the `macclean` binary, this README, the changelog and both licenses. Every archive is built, tested and smoke-tested on a native runner of its architecture before it is published.
+Releases on the [Releases page](https://github.com/irsalcloud-art/Clean_mac/releases) have one archive per architecture, `macclean-<version>-aarch64-apple-darwin.tar.gz` (Apple Silicon) and `macclean-<version>-x86_64-apple-darwin.tar.gz` (Intel), a `macclean-<version>-universal-apple-darwin.tar.gz` that runs on both, and a `SHA256SUMS` file. Each archive holds the `macclean` binary, this README, the changelog and both licenses. Every archive is built, tested and smoke-tested on a native runner of its architecture before it is published.
 
 ```bash
 curl -LO https://github.com/irsalcloud-art/Clean_mac/releases/download/v<version>/macclean-<version>-aarch64-apple-darwin.tar.gz

@@ -3,11 +3,12 @@
 Releases are built by `.github/workflows/release.yml`. Pushing a tag `v<version>` that matches `Cargo.toml` makes the workflow:
 
 1. On a native Apple Silicon runner (`macos-15`) and a native Intel runner (`macos-15-intel`): run `scripts/check.sh` (fmt, clippy, the full test suite, release builds), smoke-test the release binary, and package it with `scripts/package.sh`. The script checks the binary's architecture, `minos 11.0` and `macclean --version` before it writes the archive and its `.sha256`.
-2. Verify both checksums, merge them into `SHA256SUMS`, write the notes with `scripts/release-notes.sh`, and create the GitHub Release with the two archives and `SHA256SUMS`.
+2. Combine the two tested binaries with `lipo -create` into a universal binary, smoke-test it as arm64 and as x86_64 (Rosetta 2) on `macos-15`, package it, and smoke-test the packaged archive natively on `macos-15-intel`.
+3. Verify the three checksums, merge them into `SHA256SUMS`, write the notes with `scripts/release-notes.sh`, and create the GitHub Release with the three archives and `SHA256SUMS`.
 
 The release fails if the tag and `Cargo.toml` disagree, if `CHANGELOG.md` has no section for the version, or if any test fails on either architecture.
 
-Running the workflow by hand (Actions → Release → Run workflow) does step 1 only, as a dry run, and keeps the archives as workflow artifacts.
+Running the workflow by hand (Actions → Release → Run workflow) does steps 1 and 2 only, as a dry run, and keeps the archives as workflow artifacts.
 
 ## Steps
 

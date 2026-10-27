@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `scripts/smoke.sh`: a read-only smoke test of every command, run in CI on both architectures ([#2](https://github.com/irsalcloud-art/Clean_mac/issues/2), [#18](https://github.com/irsalcloud-art/Clean_mac/pull/18)).
 - Property tests for the root policy and entry-name checks, and a stress test that mutates the cache while cleanup runs, all bounded so they run in CI on every pull request ([#4](https://github.com/irsalcloud-art/Clean_mac/issues/4)).
 - Release workflow: a `v<version>` tag builds, tests and smoke-tests each architecture on a native runner and publishes `macclean-<version>-aarch64-apple-darwin.tar.gz`, `macclean-<version>-x86_64-apple-darwin.tar.gz` and `SHA256SUMS`, with notes from this changelog and the tested-compatibility table. `scripts/package.sh` and `scripts/release-notes.sh` do the same locally ([#6](https://github.com/irsalcloud-art/Clean_mac/issues/6)).
+- A universal (`arm64` + `x86_64`) archive in each release, built with `lipo` from the two tested binaries and smoke-tested natively on Apple Silicon, under Rosetta 2 and natively on Intel. `scripts/smoke.sh` takes `SMOKE_ARCH` to run a universal binary as a given architecture ([#8](https://github.com/irsalcloud-art/Clean_mac/issues/8)).
 - Open-source project files: dual MIT/Apache-2.0 license, contributing guide, code of conduct, security policy, issue and pull request templates, and architecture docs.
 
 ### Changed

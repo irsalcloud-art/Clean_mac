@@ -42,7 +42,7 @@ $compat
 
 ## Download and verify
 
-Pick the archive for your Mac: \`aarch64-apple-darwin\` for Apple Silicon, \`x86_64-apple-darwin\` for Intel.
+Pick the archive for your Mac: \`aarch64-apple-darwin\` for Apple Silicon, \`x86_64-apple-darwin\` for Intel, or \`universal-apple-darwin\` for either (one binary with both, smoke-tested natively on Apple Silicon and Intel).
 
 \`\`\`bash
 curl -LO $repo/releases/download/v$version/macclean-$version-aarch64-apple-darwin.tar.gz

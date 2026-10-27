@@ -6,6 +6,7 @@
 #
 #   sh scripts/package.sh aarch64-apple-darwin
 #   sh scripts/package.sh x86_64-apple-darwin [path/to/macclean]
+#   sh scripts/package.sh universal-apple-darwin path/to/universal/macclean
 #
 # Build first (`cargo build --release --target <target>`). The script checks
 # the binary before packaging it: architecture, minimum macOS version and,
@@ -20,6 +21,8 @@ version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
 case $target in
     aarch64-apple-darwin) arch=arm64 ;;
     x86_64-apple-darwin) arch=x86_64 ;;
+    # A fat binary from `lipo -create`; there is no cargo target for it.
+    universal-apple-darwin) arch="arm64 x86_64" ;;
     *)
         echo "unsupported target: $target" >&2
         exit 2
@@ -34,19 +37,21 @@ fail() {
 test -n "$version" || fail "cannot read the version from Cargo.toml"
 test -f "$bin" || fail "$bin does not exist; build it with: cargo build --release --target $target"
 
-archs=$(lipo -archs "$bin")
+archs=$(lipo -archs "$bin" | tr ' ' '\n' | sort | xargs)
 test "$archs" = "$arch" || fail "$bin contains '$archs', expected '$arch'"
 
-minos=$(otool -l "$bin" | awk '/LC_BUILD_VERSION/ {f=1} f && $1 == "minos" {print $2; exit}')
-test "$minos" = "11.0" || fail "$bin has minos '$minos', expected 11.0"
+for a in $arch; do
+    minos=$(otool -arch "$a" -l "$bin" | awk '/LC_BUILD_VERSION/ {f=1} f && $1 == "minos" {print $2; exit}')
+    test "$minos" = "11.0" || fail "$bin ($a) has minos '$minos', expected 11.0"
 
-# Run the binary when this Mac can (natively, or x86_64 under Rosetta 2).
-if arch "-$arch" /usr/bin/true 2>/dev/null; then
-    got=$(arch "-$arch" "$bin" --version)
-    test "$got" = "macclean $version" || fail "$bin --version printed '$got', expected 'macclean $version'"
-else
-    echo "note: this Mac cannot run $arch code; skipped the --version check"
-fi
+    # Run each slice when this Mac can (natively, or x86_64 under Rosetta 2).
+    if arch "-$a" /usr/bin/true 2>/dev/null; then
+        got=$(arch "-$a" "$bin" --version)
+        test "$got" = "macclean $version" || fail "$bin ($a) --version printed '$got', expected 'macclean $version'"
+    else
+        echo "note: this Mac cannot run $a code; skipped the --version check for it"
+    fi
+done
 
 name=macclean-$version-$target
 mkdir -p dist
