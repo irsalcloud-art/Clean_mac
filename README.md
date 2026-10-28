@@ -71,6 +71,20 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 
 Then unpack it and copy `macclean` somewhere on your `PATH`, for example `~/.local/bin`. The binaries are not code-signed or notarized yet ([#7](https://github.com/irsalcloud-art/Clean_mac/issues/7)), so a copy downloaded with a web browser is quarantined and macOS refuses to open it. Download with `curl` and check the checksum.
 
+### With Homebrew (not published yet)
+
+A formula is ready in [packaging/homebrew](packaging/homebrew/README.md), but the `irsalcloud-art/homebrew-macclean` tap does not exist yet ([#15](https://github.com/irsalcloud-art/Clean_mac/issues/15)). Once it does:
+
+```bash
+brew install irsalcloud-art/macclean/macclean
+```
+
+```bash
+brew uninstall macclean
+```
+
+Homebrew needs up-to-date Command Line Tools to install it.
+
 ## Build from source
 
 You need a Rust toolchain (tested with Rust 1.95.0, edition 2024). Build with Cargo from any shell, for example Rush or zsh:
