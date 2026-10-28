@@ -23,7 +23,7 @@ Goals map to [milestones](https://github.com/irsalcloud-art/Clean_mac/milestones
 * Release archives for `aarch64`, `x86_64` and universal, with `SHA256SUMS`. Not yet code-signed or notarized ([#7](https://github.com/irsalcloud-art/Clean_mac/issues/7))
 * **Goal 1:** CI runs on every push and pull request on both architectures, but is not yet required, because branch protection on `main` needs the repository owner.
 * **Goal 2:** #3, #4, #5, #9 and #10 are implemented and released; the issues stay open until they are reviewed.
-* **Goal 3:** #6 and #8 are implemented and used for both releases; #7 and #15 are not started.
+* **Goal 3:** #6 and #8 are implemented and used for both releases. #7 is not started, because signing needs an Apple Developer ID. For #15, a formula is in [`packaging/homebrew/`](packaging/homebrew/); it installs, passes `brew test` and `brew audit`, and uninstalls cleanly on Apple Silicon. It has not been tried on an Intel Mac, and the `homebrew-macclean` tap repository needs the repository owner.
 * **Goal 4:** #11, #12, #13 and #14 are implemented and released in v0.1.2; the issues stay open until they are reviewed. Each new category went in as its own commit, pushed to `main` after the full test suite passed, rather than as its own pull request. Some were tested only on synthetic caches, because the tool is not installed on the development Mac (CocoaPods, Yarn).
 
 ```
