@@ -21,10 +21,32 @@ Goals map to [milestones](https://github.com/irsalcloud-art/Clean_mac/milestones
 * `clean` categories: npm-cache, xcode-derived-data, pip-cache, homebrew-cache, gradle-cache, cocoapods-cache, yarn-cache. The Yarn 2+ global cache and the pnpm store are deliberately not cleaned, because projects use them directly.
 * 126 tests, run in CI on an Apple Silicon and an Intel runner (macOS 15.7) and under Rosetta 2, plus by hand on an Apple M3 (macOS 27.0.1)
 * Release archives for `aarch64`, `x86_64` and universal, with `SHA256SUMS`. Not yet code-signed or notarized ([#7](https://github.com/irsalcloud-art/Clean_mac/issues/7))
-* **Goal 1:** CI runs on every push and pull request on both architectures. Since 2026-10-28 a ruleset on `main` requires a pull request with both CI jobs passing, and blocks force-pushes and deletion; repository admins can bypass it, for example when GitHub cancels the Apple Silicon runner for lack of capacity. #2 was closed on 2026-10-26, after the suite passed on GitHub's native Intel runner and the documented minimum was raised to macOS 15.
-* **Goal 2:** #3, #4, #5, #9 and #10 are implemented and released; the issues stay open until they are reviewed.
-* **Goal 3:** #6 and #8 are implemented and used for both releases. #7 is not started, because signing needs an Apple Developer ID. For #15, the formula from [`packaging/homebrew/`](packaging/homebrew/) is published in the [irsalcloud-art/homebrew-macclean](https://github.com/irsalcloud-art/homebrew-macclean) tap; it installs, passes `brew test` and `brew audit`, and uninstalls cleanly on Apple Silicon. It has not been tried on an Intel Mac.
-* **Goal 4:** #11, #12, #13 and #14 are implemented and released in v0.1.2; the issues stay open until they are reviewed. Each new category went in as its own commit, pushed to `main` after the full test suite passed, rather than as its own pull request. Some were tested only on synthetic caches, because the tool is not installed on the development Mac (CocoaPods, Yarn).
+### Issue status
+
+"Implemented" or "released" does not mean "verified". Each issue is tracked on four separate lines: the code exists, automated tests cover it, it was checked on a real Mac (not only on synthetic fixtures), and it ships in a release. An issue closes when its acceptance criteria are met; anything those criteria do not cover is listed as remaining work.
+
+| Issue | Code | Automated tests | Checked on a real Mac | Released | Acceptance criteria | Remaining |
+|---|---|---|---|---|---|---|
+| #1 CI | Done | Both CI jobs on every push and PR | Intel runner is a VM on Intel Mac hardware | n/a | Met | none |
+| #2 Intel and oldest macOS | n/a | Suite on `macos-15-intel` | Yes | v0.1.1 | Met (closed) | macOS 11–14 untested, so unsupported |
+| #3 Refuse npm-cache while npm runs | Done | Yes | Refused with a live `npm exec` on the M3 | v0.1.1 | Met | none |
+| #4 Property and fuzz tests | Done | Run in CI | n/a | v0.1.1 | Met | none |
+| #5 Entries owned by another user | Done | Yes | Not recorded | v0.1.1 | Met | a real `sudo npm` cache has not been tried |
+| #6 Release archives with checksums | Done | Release workflow | Downloaded and verified (v0.1.1–v0.1.3) | v0.1.1 | Met | none |
+| #7 Code signing and notarization | Not started | none | none | no | Not met | needs an Apple Developer ID |
+| #8 Universal binary | Done | Smoke test on both architectures in the release workflow | Both slices on the M3 | v0.1.1 | Met | none |
+| #9 Custom DerivedData location | Done | Yes | Not recorded | v0.1.1 | Met | none |
+| #10 Global and project npmrc | Done | Yes | Not recorded | v0.1.1 | Met | none |
+| #11 Physical footprint | Done | Yes | Compared with `top` on the M3 | v0.1.2 | Met | none |
+| #12 `--exclude` and `--max-depth` | Done | Yes | `analyze ~ --max-depth 2` on the M3 | v0.1.2 | Met | none |
+| #13 New cleanup categories | Done | Yes, per category | Real caches: Gradle, Homebrew (dry run), npm. Synthetic only: pip, CocoaPods, Yarn 1 | v0.1.2 | Met | pip, CocoaPods and Yarn 1 on real caches |
+| #14 Full-screen TUI | Done | Yes | Pseudo-terminal on the M3 | v0.1.2 | Met | none |
+| #15 Homebrew tap | Done | `brew test` | Apple Silicon only | tap at v0.1.3 | Not met | install and uninstall on an Intel Mac |
+
+* **Goal 1:** CI runs on every push and pull request on both architectures. Since 2026-10-28 a ruleset on `main` requires a pull request with both CI jobs passing, and blocks force-pushes and deletion; the maintainer bypasses it to push directly after running `scripts/check.sh` (see CONTRIBUTING.md). The exit criteria are met.
+* **Goals 2 and 4:** every issue meets its acceptance criteria. Categories went in as separate commits pushed to `main` after the full suite passed, rather than as separate pull requests.
+* **Goal 3:** blocked on #7. #15 also needs an Intel install.
+* No security audit by a third party has been done. v0.1.3 addressed the findings of an external code review (executor approval, scanner symlink checks, pinned actions); see the [CHANGELOG](CHANGELOG.md).
 
 ```
 v0.1.0 ──► Goal 1 ──► Goal 2 ──► Goal 3 ──► Goal 4
