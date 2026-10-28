@@ -43,7 +43,7 @@ It runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo
 sh scripts/smoke.sh target/release/macclean
 ```
 
-CI runs both on an Apple Silicon runner and on an Intel runner, and also runs the x86_64 tests under Rosetta 2. Both jobs must pass.
+CI runs both on an Apple Silicon runner and on an Intel runner, and also runs the x86_64 tests under Rosetta 2. Both jobs must pass. `main` is protected: every change goes through a pull request, and it cannot be merged until both jobs are green. If GitHub cancels a job (it sometimes cancels the Apple Silicon runner for lack of capacity), re-run it.
 
 ## Pull request guidelines
 

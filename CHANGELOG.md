@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+- MacClean can be installed with Homebrew: `brew install irsalcloud-art/macclean/macclean` installs the universal binary from the new [irsalcloud-art/homebrew-macclean](https://github.com/irsalcloud-art/homebrew-macclean) tap, pinned to its release checksum. Tested on Apple Silicon so far ([#15](https://github.com/irsalcloud-art/Clean_mac/issues/15)).
+
 ## [0.1.2] - 2026-10-28
 
 New cleanup categories for pip, Homebrew, Gradle, CocoaPods and Yarn 1, a full-screen `monitor --tui`, physical footprint in `monitor`, and `analyze --max-depth`/`--exclude`. `analyze` no longer enters cloud-synced folders by default.
