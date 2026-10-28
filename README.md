@@ -201,6 +201,7 @@ Notes:
 * `analyze --max-depth N` ranks only directories at most N levels below each path, like `du -d`, so one deep chain (`registry`, `registry/src`, …) no longer fills the list. Sizes still include everything below, so the whole tree is still read.
 * `analyze --exclude GLOB` (repeatable) leaves matching entries out: they are not entered and not counted. A pattern without `/` matches a name at any depth (`node_modules`, `*.log`); a pattern with `/` matches the path below each analyzed path (`Library/CloudStorage`), and `*` does not cross `/`. The paths you pass are never excluded. Excluded entries are counted in the summary and do not make the scan "incomplete".
 * **Cloud-synced folders are not entered by default:** `~/Library/CloudStorage` (Google Drive, Dropbox, OneDrive and other apps that use File Provider) and `~/Library/Mobile Documents` (iCloud Drive). They live on the same volume, but listing them waits on the sync app and can make it fetch data. MacClean itself makes no network requests. The output lists the folders it did not enter; they do not make the scan "incomplete". `--include-cloud` scans them anyway, and a cloud folder you pass as a path yourself is always scanned. On the development Mac, `analyze ~ --max-depth 2 --top 20` takes 26 s with a 5.3 MB peak footprint; with `--include-cloud` it was still waiting inside Google Drive after 10 minutes.
+* A path you pass that goes through a symlinked folder is reported by its real location (for example `/tmp/x` as `/private/tmp/x`). A folder replaced by a symlink while it is being scanned is skipped and listed, not entered.
 * `analyze` with no paths scans **the current directory only**. It never scans the whole disk unless you pass `/` yourself. By default it stays on one filesystem; mount points it did not enter are listed.
 * `monitor --count 0` runs until you press Ctrl-C. With `--format json` and more than one sample, it prints one JSON object per line.
 * `clean` without `--interactive` is always a dry run. `--dry-run` and `--interactive` cannot be combined.
@@ -302,7 +303,7 @@ Disk "available" comes from `statfs(2)` and excludes APFS purgeable space, so Fi
 
 Filesystem safety is treated as a requirement that blocks a release.
 
-* **Three separate stages.** The scanner (`analyze`) only reads. Planning (`clean`, dry run) only reads. Deletion happens only in `cleaner::execute`, which the CLI calls only after you type exactly `yes` at an interactive terminal. Piping `yes` into MacClean does not work: stdin must be a TTY, otherwise it exits with code 5.
+* **Three separate stages.** The scanner (`analyze`) only reads. Planning (`clean`, dry run) only reads. Deletion happens only in `cleaner::execute`, which the CLI calls only after you type exactly `yes` at an interactive terminal. `execute` accepts only a plan approved with that exact answer, so the check cannot be skipped by another caller. Piping `yes` into MacClean does not work: stdin must be a TTY, otherwise it exits with code 5.
 * **Fixed allowlist.** Only the category roots above can be cleaned. There is no way to delete an arbitrary path.
 * **Policy checks on each root.** A root must be an absolute path without `..`. It must sit strictly inside your home directory. It must not be, or contain, a protected location (`/`, `/System`, `/Users`, home itself, `~/Library`, `~/Documents`, …). It must not lie inside a sensitive area (Keychains, Application Support, Containers, Mail, Messages, Safari, `.ssh`, `.gnupg`, `.aws`, `.config`, `.git`, Documents, Desktop, Pictures, …). These comparisons use path components, never string prefixes.
 * **Symbolic links.** Category roots and candidates that are symlinks are refused. During deletion every directory is opened with `O_NOFOLLOW` relative to its parent descriptor, so a component swapped for a symlink after planning makes the open fail. A symlink *inside* a cache is removed as a link entry (`unlinkat`), and its target is never touched.
@@ -350,10 +351,10 @@ Filesystem safety is treated as a requirement that blocks a release.
 sh scripts/check.sh
 ```
 
-The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (121 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (126 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
 
 * size calculations, directory aggregation, top-N limits, hard links
-* permission failures, files disappearing mid-scan, symlink roots and loops
+* permission failures, files disappearing mid-scan, symlink roots and loops, roots under symlinked folders, folders swapped for symlinks mid-scan
 * dry-run planning never deleting anything, with exact estimates
 * allowlist enforcement, protected and outside-home locations, path traversal, tampered plans
 * symlinks inside candidates, symlinked candidates and roots, ancestors swapped after planning

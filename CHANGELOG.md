@@ -7,7 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Added
+- Dependabot keeps the pinned GitHub Actions current.
 - MacClean can be installed with Homebrew: `brew install irsalcloud-art/macclean/macclean` installs the universal binary from the new [irsalcloud-art/homebrew-macclean](https://github.com/irsalcloud-art/homebrew-macclean) tap, pinned to its release checksum. Tested on Apple Silicon so far ([#15](https://github.com/irsalcloud-art/Clean_mac/issues/15)).
+
+### Changed
+- `cleaner::execute` takes an `ApprovedPlan`, which only `CleanPlan::approve` makes from the exact answer `yes`, so the confirmation is enforced by the deletion API and not only by the CLI.
+- `analyze` reports each path with its parent folders resolved, so a path reached through a symlinked folder shows where the scan really happened.
+- `clean` drops repeated `--category` values even when they are not next to each other.
+- The Homebrew formula requires macOS 15 (Sequoia), the documented minimum.
+- GitHub Actions in CI and release workflows are pinned to full commit SHAs.
+
+### Fixed
+- `analyze` could enter a different folder than the one reported if a folder in the path was swapped for a symlink while it ran. Each folder is now opened without following symlinks and checked against what was examined and against its parent before it is read.
 
 ## [0.1.2] - 2026-10-28
 

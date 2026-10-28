@@ -60,6 +60,8 @@ The result is a `CleanPlan`, which `report` renders as text or JSON. Without `--
 * stdin is a TTY (otherwise `NotInteractive`, exit code 5)
 * the user typed exactly `yes` (otherwise `Cancelled`, exit code 4)
 
+The last check is part of the API, not only of the CLI: `execute` takes an `ApprovedPlan`, which only `CleanPlan::approve` can make, and only from the exact answer `yes`. A new caller cannot delete without going through it.
+
 `execute_category` then repeats the safety checks:
 
 1. Resolve the root again from scratch, and refuse if the path differs from the plan.
@@ -72,6 +74,8 @@ The `CleanOutcome` counts only successful removals, and lists every skip and fai
 ## Scanner
 
 `scanner::scan` walks each root without following symlinks. By default it doesn't cross into other filesystems, and it lists the mount points it skipped. It counts hard-linked files once and keeps only the top N entries in heaps, so memory stays flat as the tree grows. Paths it could not read are recorded with a `SkipReason` and make the result partial.
+
+Each root is reported with its parent directories resolved, so a path reached through a symlinked folder names the folder actually scanned. Before listing a directory, the scanner opens it with `O_NOFOLLOW` and checks that it is the object it just examined and that its `..` is the directory being scanned. A directory swapped for a symlink, or reached through an ancestor swapped for one, is skipped with `SkipReason::Changed` instead of being entered.
 
 ## Monitor
 
