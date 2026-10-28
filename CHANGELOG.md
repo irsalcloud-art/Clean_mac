@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+- A "refused while … is running" message could print environment variables, including any tokens in them. npm rewrites its process title, and the argument list macOS then reports for it runs on into the environment; `clean` showed that list in text and JSON output. Command lines in these messages now leave out every `NAME=value` entry.
+
 ## [0.1.3] - 2026-10-28
 
 Hardening after an external review: deletion now needs an approved plan at the API level, `analyze` no longer enters a folder swapped for a symlink mid-scan, and CI actions are pinned to commit SHAs. No new cleanup categories.

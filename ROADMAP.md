@@ -19,8 +19,9 @@ Goals map to [milestones](https://github.com/irsalcloud-art/Clean_mac/milestones
 
 * `status`, `analyze` (with `--max-depth` and `--exclude`; cloud-synced folders skipped by default), `monitor` (with physical footprint and `--tui`), `report`
 * `clean` categories: npm-cache, xcode-derived-data, pip-cache, homebrew-cache, gradle-cache, cocoapods-cache, yarn-cache. The Yarn 2+ global cache and the pnpm store are deliberately not cleaned, because projects use them directly.
-* 126 tests, run in CI on an Apple Silicon and an Intel runner (macOS 15.7) and under Rosetta 2, plus by hand on an Apple M3 (macOS 27.0.1)
+* 127 tests, run in CI on an Apple Silicon and an Intel runner (macOS 15.7) and under Rosetta 2, plus by hand on an Apple M3 (macOS 27.0.1)
 * Release archives for `aarch64`, `x86_64` and universal, with `SHA256SUMS`. Not yet code-signed or notarized ([#7](https://github.com/irsalcloud-art/Clean_mac/issues/7))
+
 ### Issue status
 
 "Implemented" or "released" does not mean "verified". Each issue is tracked on four separate lines: the code exists, automated tests cover it, it was checked on a real Mac (not only on synthetic fixtures), and it ships in a release. An issue closes when its acceptance criteria are met; anything those criteria do not cover is listed as remaining work.

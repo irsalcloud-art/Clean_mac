@@ -8,6 +8,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -666,9 +667,28 @@ fn running_package_manager() -> Option<String> {
 /// A process's command line for a message: the program's file name and
 /// its arguments, joined by spaces (or its name if they are unreadable), at
 /// most 120 characters.
+/// True for `NAME=value`, the shape of an environment variable. A process
+/// that rewrites its title (npm does) shortens its argument area, and the
+/// argument list macOS reports then runs on into its environment, which can
+/// hold tokens. Such entries are never shown. `name==1.0` (a pip version
+/// pin) is kept as an argument.
+fn looks_like_env_var(arg: &OsStr) -> bool {
+    let bytes = arg.as_bytes();
+    let Some(eq) = bytes.iter().position(|&b| b == b'=') else {
+        return false;
+    };
+    let name = &bytes[..eq];
+    bytes.get(eq + 1) != Some(&b'=')
+        && name
+            .first()
+            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+        && name.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+}
+
 fn command_line(name: &OsStr, cmd: &[OsString]) -> String {
     let joined = cmd
         .iter()
+        .filter(|a| !looks_like_env_var(a))
         .enumerate()
         .map(|(i, a)| match Path::new(a).file_name() {
             // argv[0] can be a long interpreter path; its name is enough.
@@ -1861,6 +1881,42 @@ mod tests {
         );
         assert!(jvm.starts_with("java … "), "{jvm}");
         assert!(jvm.ends_with("GradleDaemon 9.6.1"), "{jvm}");
+    }
+
+    #[test]
+    fn environment_never_appears_in_command_lines() {
+        let os = |v: &[&str]| v.iter().map(OsString::from).collect::<Vec<_>>();
+        // What macOS reports for `npm exec` after npm rewrote its title:
+        // the argument list runs on into the environment.
+        let retitled = os(&[
+            "npm exec node -e",
+            "",
+            "ad",
+            "PRIVATE_VALUE=private",
+            "HOME=/Users/ann",
+            "npm_config_cache=/tmp/c",
+            "_=/opt/homebrew/bin/npm",
+        ]);
+        let line = command_line(OsStr::new("npm"), &retitled);
+        assert_eq!(line, "npm exec node -e ad");
+        // Ordinary arguments with `=` are kept.
+        let args = os(&[
+            "/usr/bin/pip3",
+            "install",
+            "--cache-dir=/x",
+            "pkg==1.0",
+            "-Dk=v",
+        ]);
+        assert_eq!(
+            command_line(OsStr::new("pip3"), &args),
+            "pip3 install --cache-dir=/x pkg==1.0 -Dk=v"
+        );
+        for env in ["A=", "PATH=/bin", "a_1=x"] {
+            assert!(looks_like_env_var(OsStr::new(env)), "{env}");
+        }
+        for arg in ["=x", "1A=x", "--a=b", "a-b=c", "plain", "pkg==1.0"] {
+            assert!(!looks_like_env_var(OsStr::new(arg)), "{arg}");
+        }
     }
 
     #[test]
