@@ -71,19 +71,23 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 
 Then unpack it and copy `macclean` somewhere on your `PATH`, for example `~/.local/bin`. The binaries are not code-signed or notarized yet ([#7](https://github.com/irsalcloud-art/Clean_mac/issues/7)), so a copy downloaded with a web browser is quarantined and macOS refuses to open it. Download with `curl` and check the checksum.
 
-### With Homebrew (not published yet)
-
-A formula is ready in [packaging/homebrew](packaging/homebrew/README.md), but the `irsalcloud-art/homebrew-macclean` tap does not exist yet ([#15](https://github.com/irsalcloud-art/Clean_mac/issues/15)). Once it does:
+### With Homebrew
 
 ```bash
 brew install irsalcloud-art/macclean/macclean
 ```
 
+This taps [irsalcloud-art/homebrew-macclean](https://github.com/irsalcloud-art/homebrew-macclean) and installs the universal binary, pinned to its SHA-256 from the release's `SHA256SUMS`. Homebrew needs up-to-date Command Line Tools to install it. To remove it:
+
 ```bash
 brew uninstall macclean
 ```
 
-Homebrew needs up-to-date Command Line Tools to install it.
+```bash
+brew untap irsalcloud-art/macclean
+```
+
+The tap has been tested on Apple Silicon only so far ([#15](https://github.com/irsalcloud-art/Clean_mac/issues/15)). The formula's source is in [packaging/homebrew](packaging/homebrew/README.md).
 
 ## Build from source
 
