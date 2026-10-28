@@ -47,6 +47,8 @@ On the development Mac (Apple M3, macOS 27.0.1, Homebrew 7.0.10, Command Line To
 
 After the tap was published on 2026-10-28, `brew install irsalcloud-art/macclean/macclean` was run on the same Mac straight from GitHub: it tapped the repository and installed the binary, `brew test` and `brew audit --strict --online` passed, and `brew uninstall` and `brew untap` left Homebrew as it was before.
 
+The v0.1.3 formula, which also requires macOS 15, was checked the same way in a temporary local tap on the same Mac before it was published: `brew audit --strict --online` found no problems, `brew fetch` matched the pinned SHA-256, `brew install` installed the universal binary (`macclean 0.1.3`), `brew test` passed, and `brew info` listed `Required: macOS >= 15`. The tap was removed afterwards.
+
 Homebrew needs current Command Line Tools to install any formula that has no bottle, even one that only copies a binary. With CLT 26.6 on macOS 27, `brew install` and `brew audit` stopped with "Your Command Line Tools are too outdated", and users with outdated tools will see the same message until they update them. This was tested only on Apple Silicon; an install on an Intel Mac has not been run. The universal binary itself was smoke-tested natively on Apple Silicon and Intel in the release workflow.
 
 Homebrew downloads with `curl` and does not quarantine formula files, so the binary runs although it is not yet signed or notarized ([#7](https://github.com/irsalcloud-art/Clean_mac/issues/7)).
