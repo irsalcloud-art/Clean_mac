@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-28
+
+New cleanup categories for pip, Homebrew, Gradle, CocoaPods and Yarn 1, a full-screen `monitor --tui`, physical footprint in `monitor`, and `analyze --max-depth`/`--exclude`. `analyze` no longer enters cloud-synced folders by default.
+
 ### Added
 - `clean --category yarn-cache` removes Yarn 1's cache folders (`v6`, older `v<N>`) in `~/Library/Caches/Yarn`, like `yarn cache clean`. It is refused while npm, npx, yarn or pnpm is running or when there is no `v<N>` folder, and reports `YARN_CACHE_FOLDER`, `XDG_CACHE_HOME` and `cache-folder` settings. The Yarn 2+ global cache and the pnpm store are deliberately not supported, because installed projects use them directly ([#13](https://github.com/irsalcloud-art/Clean_mac/issues/13)).
 - `clean --category cocoapods-cache` removes the `Pods` folder in `~/Library/Caches/CocoaPods`, exactly what `pod cache clean --all` removes. It is refused while `pod` is running or when there is no `Pods` folder, keeps `search_index.json` and unknown entries, and reports `CP_CACHE_DIR`, `CP_HOME_DIR` and `cache_root` settings without following them ([#13](https://github.com/irsalcloud-art/Clean_mac/issues/13)).
@@ -51,6 +55,7 @@ First version.
 - `report`: status, cleanup plan and an optional analysis in one report.
 - Text and JSON output for every command, and documented exit codes 0–5.
 
-[Unreleased]: https://github.com/irsalcloud-art/Clean_mac/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/irsalcloud-art/Clean_mac/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/irsalcloud-art/Clean_mac/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/irsalcloud-art/Clean_mac/compare/e7a562c...v0.1.1
 [0.1.0]: https://github.com/irsalcloud-art/Clean_mac/commit/e7a562c

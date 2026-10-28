@@ -11,7 +11,7 @@ MacClean is a small command-line tool for macOS with three jobs:
 
 MacClean needs no administrator rights. It never runs `sudo` and never follows symbolic links. It sends no telemetry and makes no network requests. It runs no daemon or helper. It does not "free RAM", kill processes or change system settings. It does not promise to make your Mac faster. It reports what it measured.
 
-## Current status (v0.1.1)
+## Current status (v0.1.2)
 
 | Feature | Status |
 |---|---|
@@ -41,7 +41,7 @@ Only the combinations below have a recorded test run. CI runs the full test suit
 
 | Hardware | macOS | How it was tested |
 |---|---|---|
-| Apple Silicon (Apple M3) | 27.0.1 (26A434) | By hand: test suite and smoke test. Interactive cleanup in a real terminal with v0.1.0 |
+| Apple Silicon (Apple M3) | 27.0.1 (26A434) | By hand: test suite and smoke test. Interactive cleanup by hand in a real terminal with v0.1.0; with v0.1.2, `gradle-cache` cleanup and `monitor --tui` in a pseudo-terminal (`expect`) |
 | Apple Silicon (Apple M1, virtual) | 15.7 | CI (`macos-15` runner): test suite and smoke test |
 | Intel (Core i7-8700B) | 15.7 | CI (`macos-15-intel` runner, a VM on Intel Mac hardware): native x86_64 test suite and smoke test |
 | x86_64 binary under Rosetta 2 | 27.0.1 and 15.7 | By hand on the M3, and in CI on the `macos-15` runner: test suite and smoke test |
@@ -49,7 +49,7 @@ Only the combinations below have a recorded test run. CI runs the full test suit
 
 **Supported minimum: macOS 15 (Sequoia).** Binaries are still built with `MACOSX_DEPLOYMENT_TARGET=11.0` and CI checks that the Mach-O `minos` is 11.0, so macOS 11–14 will load them. Nothing has been tested there, so treat 11–14 as unsupported until someone records a run (run `sh scripts/smoke.sh` and the test suite, then open an issue with the output).
 
-Interactive cleanup (`clean --interactive`) has only been run by hand on the M3, with v0.1.0. The changes since then are covered by the automated tests, which delete synthetic files in temporary directories. CI runs the real `clean` as a dry run only.
+Interactive cleanup (`clean --interactive`) was run by hand on the M3 with v0.1.0. With v0.1.2 it was run on the M3 through a pseudo-terminal (`expect`) for `gradle-cache`, against a real Gradle cache in a temporary home folder. The other categories are covered by the automated tests, which delete synthetic files in temporary directories. CI runs the real `clean` as a dry run only.
 
 The binary links only system libraries (libSystem, CoreFoundation, IOKit, libiconv). It does not depend on a particular Mac model or home directory path. Under Rosetta, `status` reports that the binary is translated.
 
