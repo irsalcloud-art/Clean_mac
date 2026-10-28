@@ -13,16 +13,18 @@ Every item is a GitHub issue with a priority label:
 
 Goals map to [milestones](https://github.com/irsalcloud-art/Clean_mac/milestones). The pinned "Roadmap" issue tracks progress live.
 
-## Where we are: v0.1.1 (released 2026-10-27)
+## Where we are: v0.1.2 (released 2026-10-28)
 
-[v0.1.1](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.1) is the first release with downloadable binaries. It ships the work implemented so far for Goals 1–3, ahead of the version plan below. Each goal stays open until its exit criteria are met.
+[v0.1.2](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.2) is the latest release, after [v0.1.1](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.1) on 2026-10-27, the first with downloadable binaries. Both ship work from several goals ahead of the version plan below. Each goal stays open until its exit criteria are met.
 
-* `status`, `analyze`, `clean` (npm-cache, xcode-derived-data), `monitor`, `report`
-* 81 tests, run in CI on an Apple Silicon and an Intel runner (macOS 15.7) and under Rosetta 2, plus by hand on an Apple M3 (macOS 27.0.1)
+* `status`, `analyze` (with `--max-depth` and `--exclude`; cloud-synced folders skipped by default), `monitor` (with physical footprint and `--tui`), `report`
+* `clean` categories: npm-cache, xcode-derived-data, pip-cache, homebrew-cache, gradle-cache, cocoapods-cache, yarn-cache. The Yarn 2+ global cache and the pnpm store are deliberately not cleaned, because projects use them directly.
+* 121 tests, run in CI on an Apple Silicon and an Intel runner (macOS 15.7) and under Rosetta 2, plus by hand on an Apple M3 (macOS 27.0.1)
 * Release archives for `aarch64`, `x86_64` and universal, with `SHA256SUMS`. Not yet code-signed or notarized ([#7](https://github.com/irsalcloud-art/Clean_mac/issues/7))
-* **Goal 1:** CI runs on every pull request on both architectures, but is not yet required, because branch protection on `main` needs the repository owner.
+* **Goal 1:** CI runs on every push and pull request on both architectures, but is not yet required, because branch protection on `main` needs the repository owner.
 * **Goal 2:** #3, #4, #5, #9 and #10 are implemented and released; the issues stay open until they are reviewed.
-* **Goal 3:** #6 and #8 are implemented and used for v0.1.1; #7 and #15 are not started.
+* **Goal 3:** #6 and #8 are implemented and used for both releases; #7 and #15 are not started.
+* **Goal 4:** #11, #12, #13 and #14 are implemented and released in v0.1.2; the issues stay open until they are reviewed. Each new category went in as its own commit, pushed to `main` after the full test suite passed, rather than as its own pull request. Some were tested only on synthetic caches, because the tool is not installed on the development Mac (CocoaPods, Yarn).
 
 ```
 v0.1.0 ──► Goal 1 ──► Goal 2 ──► Goal 3 ──► Goal 4
