@@ -1,0 +1,10 @@
+# Keeps the commit-SHA pins in the workflows current. Each update arrives as
+# a pull request that CI checks before it is merged.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci

@@ -8,7 +8,7 @@ class Macclean < Formula
   sha256 "7973a06c34e0d0f9c9535a5cdf9a9c6d1added1258f136d5f58f20a990161d08"
   license any_of: ["MIT", "Apache-2.0"]
 
-  depends_on :macos
+  depends_on macos: :sequoia
 
   def install
     bin.install "macclean"
