@@ -35,12 +35,17 @@ brew fetch irsalcloud-art/macclean/macclean
 
 ## What has been tested
 
-On the development Mac (Apple M3, macOS 27.0.1, Homebrew 7.0.10), with the v0.1.2 formula in a temporary local tap that was removed afterwards:
+On the development Mac (Apple M3, macOS 27.0.1, Homebrew 7.0.10, Command Line Tools 27.0), with the v0.1.2 formula in a temporary local tap that was removed afterwards:
 
 * `brew style`: no offenses. An earlier version with separate `url`s inside `on_arm`/`on_intel` failed it, which is why the formula uses the universal archive.
 * `brew info`: version `0.1.2`, license `MIT OR Apache-2.0`.
 * `brew fetch`: the download matched the pinned SHA-256.
+* `brew install`: installed to `/opt/homebrew/Cellar/macclean/0.1.2` and linked `macclean` into `/opt/homebrew/bin`. The installed file is the universal (x86_64 + arm64) binary.
+* `brew test`: passed (`--version`, `status --format json`, and `clean --dry-run --category npm-cache`).
+* `brew audit --strict` and `brew audit --new --online`: no problems.
+* The installed `macclean --version`, `macclean status` and `macclean clean --dry-run` ran normally. The binary had no `com.apple.quarantine` attribute.
+* `brew uninstall` and `brew untap` removed the binary, the link and the tap. Afterwards the Mac had no taps and no `macclean` on the `PATH`, and the same 105 formulae were installed as before. Homebrew keeps the downloaded archive in `~/Library/Caches/Homebrew` after uninstalling; `brew cleanup` removes it.
 
-`brew install` and `brew audit` did **not** run. Homebrew refused both because the Mac's Command Line Tools (26.6) are older than macOS 27 needs ("Your Command Line Tools are too outdated"). Homebrew requires current Command Line Tools for any formula without a bottle, even one that only copies a binary, so users with outdated tools will see the same message until they update them. Install, `brew test` and uninstall still need a run on an up-to-date Mac of each architecture. The universal binary itself was smoke-tested natively on Apple Silicon and Intel in the release workflow.
+Homebrew needs current Command Line Tools to install any formula that has no bottle, even one that only copies a binary. With CLT 26.6 on macOS 27, `brew install` and `brew audit` stopped with "Your Command Line Tools are too outdated", and users with outdated tools will see the same message until they update them. This was tested only on Apple Silicon; an install on an Intel Mac has not been run. The universal binary itself was smoke-tested natively on Apple Silicon and Intel in the release workflow.
 
 Homebrew downloads with `curl` and does not quarantine formula files, so the binary runs although it is not yet signed or notarized ([#7](https://github.com/irsalcloud-art/Clean_mac/issues/7)).
