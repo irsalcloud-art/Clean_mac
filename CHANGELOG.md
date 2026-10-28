@@ -6,8 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-28
+
+Security fix: `clean` could print environment variables, including tokens, when it refused a category because a tool was running. Affects 0.1.2 and 0.1.3; update if you use either.
+
 ### Security
-- A "refused while … is running" message could print environment variables, including any tokens in them. npm rewrites its process title, and the argument list macOS then reports for it runs on into the environment; `clean` showed that list in text and JSON output. Command lines in these messages now leave out every `NAME=value` entry.
+- A "refused while … is running" message could print environment variables, including any tokens in them. npm rewrites its process title, and the argument list macOS then reports for it runs on into the environment; `clean` showed that list in text and JSON output. Command lines in these messages now leave out every `NAME=value` entry. Introduced in 0.1.2; 0.1.1 showed only the process title.
 
 ## [0.1.3] - 2026-10-28
 
@@ -76,7 +80,8 @@ First version.
 - `report`: status, cleanup plan and an optional analysis in one report.
 - Text and JSON output for every command, and documented exit codes 0–5.
 
-[Unreleased]: https://github.com/irsalcloud-art/Clean_mac/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/irsalcloud-art/Clean_mac/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/irsalcloud-art/Clean_mac/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/irsalcloud-art/Clean_mac/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/irsalcloud-art/Clean_mac/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/irsalcloud-art/Clean_mac/compare/e7a562c...v0.1.1

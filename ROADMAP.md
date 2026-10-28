@@ -13,9 +13,9 @@ Every item is a GitHub issue with a priority label:
 
 Goals map to [milestones](https://github.com/irsalcloud-art/Clean_mac/milestones). The pinned "Roadmap" issue tracks progress live.
 
-## Where we are: v0.1.3 (released 2026-10-28)
+## Where we are: v0.1.4 (released 2026-10-28)
 
-[v0.1.3](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.3) is the latest release. It hardens [v0.1.2](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.2) from the same day after an external review, and adds no features. [v0.1.1](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.1), on 2026-10-27, was the first with downloadable binaries. These releases ship work from several goals ahead of the version plan below. Each goal stays open until its exit criteria are met.
+[v0.1.4](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.4) is the latest release. It fixes environment variables leaking into `clean`'s "is running" messages. [v0.1.3](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.3) hardens [v0.1.2](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.2) from the same day after an external review, and adds no features. [v0.1.1](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.1), on 2026-10-27, was the first with downloadable binaries. These releases ship work from several goals ahead of the version plan below. Each goal stays open until its exit criteria are met.
 
 * `status`, `analyze` (with `--max-depth` and `--exclude`; cloud-synced folders skipped by default), `monitor` (with physical footprint and `--tui`), `report`
 * `clean` categories: npm-cache, xcode-derived-data, pip-cache, homebrew-cache, gradle-cache, cocoapods-cache, yarn-cache. The Yarn 2+ global cache and the pnpm store are deliberately not cleaned, because projects use them directly.
