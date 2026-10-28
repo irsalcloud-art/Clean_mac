@@ -6,10 +6,15 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 use macclean::cleaner::{
-    self, CategoryId, CategoryState, CleanContext, CleanOutcome, CleanPlan, DerivedDataSetting,
-    NpmCacheSource,
+    self, ApprovedPlan, CategoryId, CategoryState, CleanContext, CleanOutcome, CleanPlan,
+    DerivedDataSetting, NpmCacheSource,
 };
 use macclean::platform::{self, PrefValue};
+
+/// Approves a copy of `plan` the way the CLI does after the user types `yes`.
+fn approve(plan: &CleanPlan) -> ApprovedPlan {
+    plan.clone().approve(cleaner::CONFIRMATION_WORD).unwrap()
+}
 
 const XCODE_HASH: &str = "abcdefghijklmnopqrstuvwxyzab";
 const BREW_HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -291,7 +296,7 @@ fn execute_deletes_only_verified_candidates_and_reports_exact_bytes() {
         allocated_under(&f.p("Library/Developer/Xcode/DerivedData/ModuleCache.noindex"));
 
     let plan = f.plan(&CategoryId::ALL);
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert!(!out.is_partial(), "{out:#?}");
 
     let n = npm(&out);
@@ -317,11 +322,24 @@ fn execute_deletes_only_verified_candidates_and_reports_exact_bytes() {
 }
 
 #[test]
+fn a_refused_answer_deletes_nothing() {
+    let f = Fixture::new();
+    let plan = f.plan(&CategoryId::ALL);
+    assert!(plan.has_candidates());
+    for answer in ["", "y", "YES", "no"] {
+        let back = plan.clone().approve(answer).unwrap_err();
+        assert!(back.dry_run);
+    }
+    assert!(f.p(".npm/_cacache/content-v2/sha512/ab/cd/blob1").exists());
+    f.assert_survivors();
+}
+
+#[test]
 fn selected_category_only() {
     let f = Fixture::new();
     let plan = f.plan(&[CategoryId::NpmCache]);
     assert_eq!(plan.categories.len(), 1);
-    cleaner::execute(&plan, &f.ctx());
+    cleaner::execute(&approve(&plan), &f.ctx());
     assert!(!f.p(".npm/_cacache/content-v2").exists());
     assert!(
         f.p(&format!(
@@ -344,7 +362,7 @@ fn npm_cache_outside_home_is_refused() {
     let plan = cleaner::plan(&[CategoryId::NpmCache], &ctx);
     assert_eq!(plan.categories[0].state, CategoryState::Refused);
     assert!(plan.categories[0].candidates.is_empty());
-    let out = cleaner::execute(&plan, &ctx);
+    let out = cleaner::execute(&approve(&plan), &ctx);
     assert!(out.categories.is_empty());
     assert!(cache.join("_cacache/content-v2/blob").exists());
     f.assert_survivors();
@@ -360,7 +378,7 @@ fn npm_cache_in_protected_location_is_refused() {
         ctx.npm_cache = NpmCacheSource::Explicit(f.p(dir));
         let plan = cleaner::plan(&[CategoryId::NpmCache], &ctx);
         assert_eq!(plan.categories[0].state, CategoryState::Refused, "{dir}");
-        cleaner::execute(&plan, &ctx);
+        cleaner::execute(&approve(&plan), &ctx);
         assert!(f.p(&format!("{dir}/_cacache/content-v2/blob")).exists());
     }
     f.assert_survivors();
@@ -375,7 +393,7 @@ fn npm_cache_path_with_traversal_is_normalized_or_refused() {
     ctx.npm_cache = NpmCacheSource::Explicit(f.p(".npm/../Documents"));
     let plan = cleaner::plan(&[CategoryId::NpmCache], &ctx);
     assert_eq!(plan.categories[0].state, CategoryState::Refused);
-    cleaner::execute(&plan, &ctx);
+    cleaner::execute(&approve(&plan), &ctx);
     assert!(f.p("Documents/_cacache/content-v2/blob").exists());
     f.assert_survivors();
 }
@@ -389,7 +407,7 @@ fn unrecognized_npm_layout_is_refused() {
     let plan = cleaner::plan(&[CategoryId::NpmCache], &ctx);
     assert_eq!(plan.categories[0].state, CategoryState::Refused);
     assert!(plan.categories[0].candidates.is_empty());
-    cleaner::execute(&plan, &ctx);
+    cleaner::execute(&approve(&plan), &ctx);
     assert!(f.p("weird/_cacache/photos/cat.jpg").exists());
     f.assert_survivors();
 }
@@ -408,7 +426,7 @@ fn symlink_inside_candidate_is_unlinked_but_target_untouched() {
     )
     .unwrap();
     let plan = f.plan(&[CategoryId::NpmCache]);
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert!(!out.is_partial(), "{out:#?}");
     assert_eq!(npm(&out).removed.symlinks, 2);
     assert!(!f.p(".npm/_cacache/content-v2").exists());
@@ -434,7 +452,7 @@ fn symlinked_candidate_is_forbidden_and_target_untouched() {
             .any(|r| r.path == f.p(".npm/_cacache/tmp")
                 && r.risk == macclean::policy::Risk::Forbidden)
     );
-    cleaner::execute(&plan, &f.ctx());
+    cleaner::execute(&approve(&plan), &f.ctx());
     assert!(f.p(".npm/_cacache/tmp").is_symlink());
     f.assert_survivors();
 }
@@ -474,7 +492,7 @@ fn symlinked_category_roots_are_refused() {
     for c in &plan.categories {
         assert_eq!(c.state, CategoryState::Refused, "{:?}", c.category);
     }
-    cleaner::execute(&plan, &f.ctx());
+    cleaner::execute(&approve(&plan), &f.ctx());
     assert!(elsewhere.join(format!("Other-{XCODE_HASH}/x")).exists());
     assert!(
         f.p(".npm/_cacache.real/content-v2/sha512/ab/cd/blob1")
@@ -495,7 +513,7 @@ fn ancestor_swapped_for_symlink_after_planning_is_refused() {
     fs::rename(f.p(".npm"), f.p(".npm-moved")).unwrap();
     symlink(&decoy, f.p(".npm")).unwrap();
 
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert!(npm(&out).refused.is_some(), "{out:#?}");
     assert_eq!(npm(&out).removed.files, 0);
     assert!(decoy.join("_cacache/content-v2/precious").exists());
@@ -513,7 +531,7 @@ fn root_replaced_after_planning_is_refused() {
     fs::rename(&dd, f.p("Library/Developer/Xcode/DerivedData.old")).unwrap();
     fs::create_dir_all(dd.join(format!("MyApp-{XCODE_HASH}"))).unwrap();
     fs::write(dd.join(format!("MyApp-{XCODE_HASH}/new")), b"n").unwrap();
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert!(out.categories[0].refused.is_some());
     assert!(dd.join(format!("MyApp-{XCODE_HASH}/new")).exists());
     assert!(
@@ -534,7 +552,7 @@ fn candidate_replaced_after_planning_is_rejected() {
     )
     .unwrap();
     f.file(".npm/_cacache/content-v2/new-blob", 10);
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     let n = npm(&out);
     assert_eq!(n.rejected_candidates.len(), 1);
     assert_eq!(
@@ -563,7 +581,7 @@ fn files_changed_or_added_after_planning_are_kept() {
     )
     .unwrap();
     f.file(".npm/_cacache/index-v5/12/34/added-later", 5);
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     let n = npm(&out);
     assert!(out.is_partial());
     assert_eq!(n.removed.skipped_total, 2, "{n:#?}");
@@ -593,7 +611,7 @@ fn hard_linked_files_are_skipped() {
     )
     .unwrap();
     let plan = f.plan(&[CategoryId::NpmCache]);
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert!(out.is_partial());
     assert!(f.p(".npm/_cacache/index-v5/hardlink").exists());
     assert_eq!(fs::read(f.p("Documents/important.txt")).unwrap().len(), 44);
@@ -607,7 +625,7 @@ fn partial_failure_is_reported_and_remaining_items_are_removed() {
     let locked = f.p(".npm/_cacache/content-v2/sha512/ab/cd");
     let plan = f.plan(&[CategoryId::NpmCache]);
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     let n = npm(&out);
     assert!(out.is_partial());
@@ -628,7 +646,7 @@ fn tampered_candidate_names_are_rejected() {
     let cand = &mut plan.categories[0].candidates[0];
     cand.name = "../../Documents".into();
     cand.path = f.p(".npm/_cacache/../../Documents");
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert_eq!(npm(&out).rejected_candidates.len(), 1);
     assert!(f.p("Documents/important.txt").exists());
     f.assert_survivors();
@@ -643,7 +661,7 @@ fn xcode_running_refuses_derived_data() {
     assert_eq!(plan.categories[0].state, CategoryState::Refused);
     // Xcode starting between plan and execution is also caught.
     let plan = f.plan(&[CategoryId::XcodeDerivedData]);
-    let out = cleaner::execute(&plan, &ctx);
+    let out = cleaner::execute(&approve(&plan), &ctx);
     assert!(out.categories[0].refused.is_some());
     assert!(
         f.p(&format!(
@@ -673,7 +691,7 @@ fn package_manager_running_refuses_npm_cache() {
     // npm starting between plan and execution is also caught.
     let plan = f.plan(&[CategoryId::NpmCache]);
     assert_eq!(plan.categories[0].state, CategoryState::Ready);
-    let out = cleaner::execute(&plan, &ctx);
+    let out = cleaner::execute(&approve(&plan), &ctx);
     assert!(npm(&out).refused.is_some(), "{out:#?}");
     assert_eq!(npm(&out).removed.files, 0);
     assert!(out.is_partial());
@@ -715,7 +733,11 @@ fn missing_categories_are_reported_not_present() {
         assert_eq!(c.state, CategoryState::NotPresent);
     }
     assert!(!plan.has_candidates());
-    assert!(cleaner::execute(&plan, &ctx).categories.is_empty());
+    assert!(
+        cleaner::execute(&approve(&plan), &ctx)
+            .categories
+            .is_empty()
+    );
 }
 
 fn with_derived_data(f: &Fixture, value: &str) -> CleanContext {
@@ -740,7 +762,7 @@ fn custom_derived_data_location_is_cleaned_like_the_default() {
     assert!(c.root_source.as_deref().unwrap().contains("custom"));
     assert_eq!(c.candidates.len(), 2);
 
-    let out = cleaner::execute(&plan, &ctx);
+    let out = cleaner::execute(&approve(&plan), &ctx);
     assert!(!out.is_partial(), "{out:#?}");
     assert!(!f.p(&custom).exists());
     assert!(!f.p("Builds/DerivedData/ModuleCache.noindex").exists());
@@ -807,7 +829,7 @@ fn unsafe_custom_derived_data_locations_are_refused() {
         if expect == CategoryState::Refused {
             assert!(c.state_reason.is_some(), "{value}");
         }
-        cleaner::execute(&plan, &ctx);
+        cleaner::execute(&approve(&plan), &ctx);
     }
     for dir in [
         f.p("Documents/DD"),
@@ -853,7 +875,7 @@ fn pip_cache_deletes_only_http_and_wheel_caches() {
     // Planning deleted nothing.
     assert!(root.join("http-v2/a/b/c/d/e/entry.body").exists());
 
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert!(!out.is_partial(), "{out:#?}");
     assert_eq!(pip(&out).removed.logical_bytes, 6690);
     for gone in ["http", "http-v2", "wheels"] {
@@ -886,7 +908,7 @@ fn pip_running_refuses_pip_cache() {
 
     // pip starting between plan and execution is also caught.
     let plan = f.plan(&[CategoryId::PipCache]);
-    let out = cleaner::execute(&plan, &ctx);
+    let out = cleaner::execute(&approve(&plan), &ctx);
     assert!(pip(&out).refused.is_some());
     assert!(f.p("Library/Caches/pip/http-v2/a/b/c/d/e/entry").exists());
     f.assert_survivors();
@@ -903,7 +925,7 @@ fn unrecognized_pip_layout_is_refused() {
     let c = &plan.categories[0];
     assert_eq!(c.state, CategoryState::Refused);
     assert!(c.candidates.is_empty());
-    cleaner::execute(&plan, &f.ctx());
+    cleaner::execute(&approve(&plan), &f.ctx());
     assert!(f.p("Library/Caches/pip/photos/cat.jpg").exists());
     f.assert_survivors();
 }
@@ -931,7 +953,7 @@ fn pip_cache_links_never_reach_their_targets() {
             .iter()
             .any(|r| r.path == root.join("wheels") && r.risk == macclean::policy::Risk::Forbidden)
     );
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     let p = pip(&out);
     assert_eq!(p.removed.symlinks, 1);
     // The hard-linked file is skipped and keeps its directory in place.
@@ -997,7 +1019,7 @@ fn homebrew_cache_deletes_only_downloads() {
         );
     }
 
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert!(!out.is_partial(), "{out:#?}");
     assert_eq!(brew(&out).removed.logical_bytes, 9400);
     assert!(!root.join("downloads").exists());
@@ -1023,7 +1045,7 @@ fn brew_running_refuses_homebrew_cache() {
             .contains("brew is running")
     );
     let plan = f.plan(&[CategoryId::HomebrewCache]);
-    let out = cleaner::execute(&plan, &ctx);
+    let out = cleaner::execute(&approve(&plan), &ctx);
     assert!(brew(&out).refused.is_some());
     assert!(
         f.p(&format!(
@@ -1041,7 +1063,7 @@ fn unrecognized_homebrew_layout_is_refused() {
     f.file("Library/Caches/Homebrew/photos/cat.jpg", 100);
     let plan = f.plan(&[CategoryId::HomebrewCache]);
     assert_eq!(plan.categories[0].state, CategoryState::Refused);
-    cleaner::execute(&plan, &f.ctx());
+    cleaner::execute(&approve(&plan), &f.ctx());
     assert!(f.p("Library/Caches/Homebrew/photos/cat.jpg").exists());
     f.assert_survivors();
 }
@@ -1053,7 +1075,7 @@ fn homebrew_links_into_downloads_never_reach_outside() {
     symlink(f.p("Documents"), dl.join("docs-link")).unwrap();
     fs::hard_link(f.p("Documents/important.txt"), dl.join("hardlink")).unwrap();
     let plan = f.plan(&[CategoryId::HomebrewCache]);
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     let b = brew(&out);
     assert_eq!(b.removed.symlinks, 1);
     assert!(b.removed.skipped_total >= 1);
@@ -1114,7 +1136,7 @@ fn gradle_cache_deletes_only_rebuildable_caches() {
         assert!(review.contains(&root.join(kept)), "{kept}: {review:?}");
     }
 
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert!(!out.is_partial(), "{out:#?}");
     assert_eq!(gradle(&out).removed.logical_bytes, 13_000);
     for gone in ["9.6.1", "jars-9", "modules-2", "transforms-4"] {
@@ -1134,7 +1156,7 @@ fn gradle_running_refuses_gradle_cache() {
     assert_eq!(plan.categories[0].state, CategoryState::Refused);
     assert!(reason.contains("gradle --stop"), "{reason}");
     let plan = f.plan(&[CategoryId::GradleCache]);
-    let out = cleaner::execute(&plan, &ctx);
+    let out = cleaner::execute(&approve(&plan), &ctx);
     assert!(gradle(&out).refused.is_some());
     assert!(
         f.p(".gradle/caches/modules-2/files-2.1/com.x/lib/1.0/abc/lib-1.0.jar")
@@ -1153,7 +1175,7 @@ fn unrecognized_gradle_layout_is_refused() {
     let plan = f.plan(&[CategoryId::GradleCache]);
     assert_eq!(plan.categories[0].state, CategoryState::Refused);
     assert!(plan.categories[0].candidates.is_empty());
-    cleaner::execute(&plan, &f.ctx());
+    cleaner::execute(&approve(&plan), &f.ctx());
     assert!(
         f.p(".gradle/caches/9.6.1/fileHashes/fileHashes.bin")
             .exists()
@@ -1179,7 +1201,7 @@ fn gradle_cache_links_never_reach_their_targets() {
             .iter()
             .any(|r| r.path == root.join("8.0") && r.risk == macclean::policy::Risk::Forbidden)
     );
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert_eq!(gradle(&out).removed.symlinks, 1);
     assert!(root.join("jars-9/hardlink").exists());
     assert!(f.p("elsewhere-8.0/keep").exists());
@@ -1211,7 +1233,7 @@ fn cocoapods_cache_deletes_only_the_pods_folder() {
     assert_eq!(c.not_eligible.len(), 1);
     assert_eq!(c.not_eligible[0].path, root.join("search_index.json"));
 
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert!(!out.is_partial(), "{out:#?}");
     assert_eq!(pods(&out).removed.logical_bytes, 4006);
     assert!(!root.join("Pods").exists());
@@ -1227,7 +1249,7 @@ fn pod_running_refuses_cocoapods_cache() {
     let plan = cleaner::plan(&[CategoryId::CocoapodsCache], &ctx);
     assert_eq!(plan.categories[0].state, CategoryState::Refused);
     let plan = f.plan(&[CategoryId::CocoapodsCache]);
-    let out = cleaner::execute(&plan, &ctx);
+    let out = cleaner::execute(&approve(&plan), &ctx);
     assert!(pods(&out).refused.is_some());
     assert!(f.p("Library/Caches/CocoaPods/Pods/VERSION").exists());
     f.assert_survivors();
@@ -1240,7 +1262,7 @@ fn unrecognized_cocoapods_layout_is_refused() {
     f.file("Library/Caches/CocoaPods/photos/cat.jpg", 100);
     let plan = f.plan(&[CategoryId::CocoapodsCache]);
     assert_eq!(plan.categories[0].state, CategoryState::Refused);
-    cleaner::execute(&plan, &f.ctx());
+    cleaner::execute(&approve(&plan), &f.ctx());
     assert!(f.p("Library/Caches/CocoaPods/photos/cat.jpg").exists());
     f.assert_survivors();
 }
@@ -1256,7 +1278,7 @@ fn cocoapods_cache_links_never_reach_their_targets() {
     )
     .unwrap();
     let plan = f.plan(&[CategoryId::CocoapodsCache]);
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     let p = pods(&out);
     assert_eq!(p.removed.symlinks, 1);
     assert!(pods_dir.join("External/hardlink").exists());
@@ -1271,7 +1293,7 @@ fn cocoapods_cache_links_never_reach_their_targets() {
     symlink(f.p("pods-real"), &pods_dir).unwrap();
     let plan = f.plan(&[CategoryId::CocoapodsCache]);
     assert!(plan.categories[0].candidates.is_empty());
-    cleaner::execute(&plan, &f.ctx());
+    cleaner::execute(&approve(&plan), &f.ctx());
     assert!(f.p("pods-real/VERSION").exists());
 }
 
@@ -1295,7 +1317,7 @@ fn yarn_cache_deletes_only_yarn1_cache_folders() {
     assert_eq!(c.estimate.logical_bytes, 1500 + 900 + 5000 + 10 + 300);
     assert_eq!(c.not_eligible.len(), 1);
 
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert!(!out.is_partial(), "{out:#?}");
     assert_eq!(yarn(&out).removed.logical_bytes, 7710);
     assert!(!root.join("v6").exists());
@@ -1312,7 +1334,7 @@ fn running_package_manager_refuses_yarn_cache() {
     let plan = cleaner::plan(&[CategoryId::YarnCache], &ctx);
     assert_eq!(plan.categories[0].state, CategoryState::Refused);
     let plan = f.plan(&[CategoryId::YarnCache]);
-    let out = cleaner::execute(&plan, &ctx);
+    let out = cleaner::execute(&approve(&plan), &ctx);
     assert!(yarn(&out).refused.is_some());
     assert!(f.p("Library/Caches/Yarn/v6/.tmp/partial").exists());
     f.assert_survivors();
@@ -1327,7 +1349,7 @@ fn unrecognized_yarn_layout_is_refused() {
     f.file("Library/Caches/Yarn/photos/cat.jpg", 100);
     let plan = f.plan(&[CategoryId::YarnCache]);
     assert_eq!(plan.categories[0].state, CategoryState::Refused);
-    cleaner::execute(&plan, &f.ctx());
+    cleaner::execute(&approve(&plan), &f.ctx());
     assert!(f.p("Library/Caches/Yarn/photos/cat.jpg").exists());
     f.assert_survivors();
 }
@@ -1339,7 +1361,7 @@ fn yarn_cache_links_never_reach_their_targets() {
     symlink(f.p("Documents"), v6.join("docs-link")).unwrap();
     fs::hard_link(f.p("Documents/important.txt"), v6.join(".tmp/hardlink")).unwrap();
     let plan = f.plan(&[CategoryId::YarnCache]);
-    let out = cleaner::execute(&plan, &f.ctx());
+    let out = cleaner::execute(&approve(&plan), &f.ctx());
     assert_eq!(yarn(&out).removed.symlinks, 1);
     assert!(v6.join(".tmp/hardlink").exists());
     assert_eq!(fs::read(f.p("Documents/important.txt")).unwrap().len(), 44);

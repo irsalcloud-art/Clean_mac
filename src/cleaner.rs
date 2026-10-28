@@ -385,9 +385,34 @@ pub struct CleanPlan {
     pub categories: Vec<CategoryPlan>,
 }
 
+/// The exact answer that approves deletion.
+pub const CONFIRMATION_WORD: &str = "yes";
+
 impl CleanPlan {
     pub fn has_candidates(&self) -> bool {
         self.categories.iter().any(|c| !c.candidates.is_empty())
+    }
+
+    /// Turns the plan into one that [`execute`] accepts, provided `answer`
+    /// is exactly [`CONFIRMATION_WORD`]. Any other answer hands the plan
+    /// back unchanged.
+    pub fn approve(mut self, answer: &str) -> std::result::Result<ApprovedPlan, CleanPlan> {
+        if answer != CONFIRMATION_WORD {
+            return Err(self);
+        }
+        self.dry_run = false;
+        Ok(ApprovedPlan(self))
+    }
+}
+
+/// A plan the user approved. It can only be made by [`CleanPlan::approve`],
+/// so nothing reaches [`execute`] without passing the confirmation check.
+#[derive(Debug)]
+pub struct ApprovedPlan(CleanPlan);
+
+impl ApprovedPlan {
+    pub fn plan(&self) -> &CleanPlan {
+        &self.0
     }
 }
 
@@ -1742,9 +1767,9 @@ fn execute_category(cat: &CategoryPlan, ctx: &CleanContext, cutoff_ns: i128) -> 
     out
 }
 
-/// Deletes the candidates of a plan after revalidating each of them.
-/// The caller is responsible for obtaining the user's confirmation first.
-pub fn execute(plan: &CleanPlan, ctx: &CleanContext) -> CleanOutcome {
+/// Deletes the candidates of an approved plan after revalidating each of them.
+pub fn execute(approved: &ApprovedPlan, ctx: &CleanContext) -> CleanOutcome {
+    let plan = approved.plan();
     CleanOutcome {
         categories: plan
             .categories
@@ -1779,6 +1804,22 @@ mod tests {
         // An interior `.` is dropped by Path itself and names the same directory.
         assert_eq!(loc(s("/Users/ann/./DD")).unwrap().0, home.join("DD"));
         assert!(loc(PrefValue::NotAString).is_err());
+    }
+
+    #[test]
+    fn only_the_exact_word_approves_a_plan() {
+        let plan = CleanPlan {
+            dry_run: true,
+            created_unix_secs: 0,
+            created_ns: 0,
+            categories: Vec::new(),
+        };
+        let mut plan = ["YES", "y", " yes", "yes ", "", "no"]
+            .iter()
+            .fold(plan, |p, a| p.approve(a).expect_err(a));
+        assert!(plan.dry_run);
+        plan = plan.approve("yes").unwrap().0;
+        assert!(!plan.dry_run);
     }
 
     #[test]

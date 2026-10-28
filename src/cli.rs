@@ -1,5 +1,6 @@
 //! Command-line parsing and command dispatch.
 
+use std::collections::HashSet;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -134,14 +135,18 @@ pub struct ReportArgs {
 }
 
 /// Reads one line and accepts only an exact "yes".
-pub fn confirm(input: &mut dyn BufRead, out: &mut dyn Write, prompt: &str) -> io::Result<bool> {
+/// Shows `prompt` and returns the line typed in reply, without its line
+/// ending. End of input reads as an empty answer.
+pub fn read_answer(
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    prompt: &str,
+) -> io::Result<String> {
     write!(out, "{prompt}")?;
     out.flush()?;
     let mut line = String::new();
-    if input.read_line(&mut line)? == 0 {
-        return Ok(false);
-    }
-    Ok(line.trim_end_matches(['\r', '\n']) == "yes")
+    input.read_line(&mut line)?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
 fn scan_options(
@@ -176,9 +181,9 @@ fn categories_or_all(c: Vec<CategoryId>) -> Vec<CategoryId> {
     if c.is_empty() {
         CategoryId::ALL.to_vec()
     } else {
-        let mut v = c;
-        v.dedup();
-        v
+        // Keep the first occurrence of each category, in the order given.
+        let mut seen = HashSet::new();
+        c.into_iter().filter(|id| seen.insert(*id)).collect()
     }
 }
 
@@ -217,11 +222,12 @@ fn run_clean(args: CleanArgs, out: &mut dyn Write) -> Result<u8> {
          Type 'yes' to delete, anything else to cancel: ",
         report::human_bytes(total)
     );
-    if !confirm(&mut io::stdin().lock(), &mut err, &prompt)? {
+    let answer = read_answer(&mut io::stdin().lock(), &mut err, &prompt)?;
+    let Ok(approved) = plan.approve(&answer) else {
         return Err(MacCleanError::Cancelled);
-    }
+    };
     drop(err);
-    let outcome = cleaner::execute(&plan, &ctx);
+    let outcome = cleaner::execute(&approved, &ctx);
     match args.format.format {
         OutputFormat::Text => report::render_outcome(out, &outcome)?,
         OutputFormat::Json => report::write_json(out, &outcome)?,
@@ -362,6 +368,15 @@ mod tests {
     }
 
     #[test]
+    fn repeated_categories_are_kept_once_in_order() {
+        use CategoryId::*;
+        assert_eq!(
+            categories_or_all(vec![NpmCache, PipCache, NpmCache, PipCache, YarnCache]),
+            vec![NpmCache, PipCache, YarnCache]
+        );
+    }
+
+    #[test]
     fn confirm_accepts_only_exact_yes() {
         for (input, expected) in [
             ("yes\n", true),
@@ -374,8 +389,12 @@ mod tests {
             ("", false),
         ] {
             let mut out = Vec::new();
-            let got = confirm(&mut input.as_bytes(), &mut out, "? ").unwrap();
-            assert_eq!(got, expected, "input {input:?}");
+            let got = read_answer(&mut input.as_bytes(), &mut out, "? ").unwrap();
+            assert_eq!(
+                got == cleaner::CONFIRMATION_WORD,
+                expected,
+                "input {input:?}"
+            );
             assert_eq!(out, b"? ");
         }
     }

@@ -16,11 +16,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use macclean::cleaner::{
-    self, CategoryId, CategoryState, CleanContext, DerivedDataSetting, NpmCacheSource,
+    self, ApprovedPlan, CategoryId, CategoryState, CleanContext, CleanPlan, DerivedDataSetting,
+    NpmCacheSource,
 };
 use macclean::platform::{self, PrefValue, fsops};
 use macclean::policy::validate_category_root;
 use proptest::prelude::*;
+
+/// Approves a copy of `plan` the way the CLI does after the user types `yes`.
+fn approve(plan: &CleanPlan) -> ApprovedPlan {
+    plan.clone().approve(cleaner::CONFIRMATION_WORD).unwrap()
+}
 
 // ---------------------------------------------------------------------------
 // Snapshots: what a directory tree looks like, without following symlinks
@@ -243,7 +249,7 @@ fn differently_spelled_protected_folders_are_refused() {
             CategoryState::Refused,
             "{spelling}"
         );
-        cleaner::execute(&plan, &ctx);
+        cleaner::execute(&approve(&plan), &ctx);
     }
     for dir in ["Documents", ".ssh", "Library/Application Support"] {
         assert!(home.join(dir).join("_cacache/content-v2/blob").exists());
@@ -483,7 +489,7 @@ fn concurrent_mutation_never_reaches_outside_the_fixture() {
         if mutator.is_none() {
             mutator = Some(spawn());
         }
-        cleaner::execute(&plan, &ctx);
+        cleaner::execute(&approve(&plan), &ctx);
         stop.store(true, Ordering::Relaxed);
         mutator.unwrap().join().unwrap();
 
