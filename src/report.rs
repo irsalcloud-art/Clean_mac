@@ -200,6 +200,7 @@ fn skip_reason(r: &SkipReason) -> String {
             "is a symbolic link (not followed; pass the target path instead)".into()
         }
         SkipReason::Cycle => "filesystem cycle".into(),
+        SkipReason::Changed => "changed while being scanned (not followed)".into(),
         SkipReason::Error(e) => e.clone(),
     }
 }

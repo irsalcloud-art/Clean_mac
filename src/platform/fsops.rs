@@ -145,6 +145,18 @@ pub fn open_dir_at(dir: BorrowedFd<'_>, name: &OsStr) -> io::Result<OwnedFd> {
     open_dir_raw(dir.as_raw_fd(), &cstring(name)?)
 }
 
+/// Opens the directory at `path` without following a symlink at its last
+/// component. Earlier components are resolved by the kernel; callers that
+/// need more check the identity of the result with [`fstat`].
+pub fn open_dir_path(path: &Path) -> io::Result<OwnedFd> {
+    open_dir_raw(libc::AT_FDCWD, &cstring(path.as_os_str())?)
+}
+
+/// Opens the parent (`..`) of an open directory.
+pub fn open_parent(dir: BorrowedFd<'_>) -> io::Result<OwnedFd> {
+    open_dir_raw(dir.as_raw_fd(), c"..")
+}
+
 /// Opens an absolute path one component at a time with `O_NOFOLLOW`, so the
 /// call fails if any component is (or has become) a symbolic link. The path
 /// must therefore already be canonical.

@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 
-use crate::platform::fsops::FileId;
+use crate::platform::fsops::{self, FileId, borrow};
 
 /// How many skipped paths are listed individually; the total is always counted.
 pub const MAX_RECORDED_SKIPS: usize = 200;
@@ -129,6 +129,9 @@ pub enum SkipReason {
     SymlinkRootNotFollowed,
     /// The directory is already being scanned higher up (filesystem cycle).
     Cycle,
+    /// The entry was replaced (for example by a symlink) between being
+    /// examined and being opened, so it was not entered.
+    Changed,
     Error(String),
 }
 
@@ -274,6 +277,11 @@ struct Scanner<'h> {
 }
 
 fn classify(err: &io::Error) -> SkipReason {
+    // O_NOFOLLOW and O_DIRECTORY fail this way when a directory was
+    // swapped for a symlink or a file after it was examined.
+    if matches!(err.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) {
+        return SkipReason::Changed;
+    }
     match err.kind() {
         io::ErrorKind::PermissionDenied => SkipReason::PermissionDenied,
         io::ErrorKind::NotFound => SkipReason::Vanished,
@@ -296,13 +304,32 @@ impl<'h> Scanner<'h> {
         }
     }
 
-    fn list(&mut self, path: &Path) -> io::Result<Vec<OsString>> {
+    /// Lists the directory at `path`, which was examined as `id` and must
+    /// sit directly in `parent` (None for a root). Opening by path again
+    /// could land somewhere else if a component was swapped for a symlink
+    /// meanwhile, so the opened directory's identity and its `..` are
+    /// checked before anything is read from it.
+    fn list(
+        &mut self,
+        path: &Path,
+        id: FileId,
+        parent: Option<FileId>,
+    ) -> Result<Vec<OsString>, SkipReason> {
+        let err = |e: io::Error| classify(&e);
         // Collect names and close the directory immediately so open
         // descriptors do not grow with tree depth.
-        let mut names = Vec::new();
-        for entry in fs::read_dir(path)? {
-            names.push(entry?.file_name());
+        let dir = fsops::open_dir_path(path).map_err(err)?;
+        if fsops::fstat(borrow(&dir)).map_err(err)?.id != id {
+            return Err(SkipReason::Changed);
         }
+        if let Some(parent) = parent {
+            let up = fsops::open_parent(borrow(&dir)).map_err(err)?;
+            if fsops::fstat(borrow(&up)).map_err(err)?.id != parent {
+                return Err(SkipReason::Changed);
+            }
+        }
+        let names = fsops::read_dir_names(borrow(&dir)).map_err(err)?;
+        drop(dir);
         if let Some(hook) = self.hook.as_mut() {
             hook(path);
         }
@@ -333,21 +360,21 @@ impl<'h> Scanner<'h> {
             return;
         }
         let root_dev = meta.dev();
+        let root_id = FileId {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        };
         self.totals.directories += 1;
-        let names = match self.list(root) {
+        let names = match self.list(root, root_id, None) {
             Ok(n) => n,
-            Err(e) => {
-                let reason = classify(&e);
+            Err(reason) => {
                 self.skip(root.to_path_buf(), reason);
                 return;
             }
         };
         let mut stack = vec![Frame {
             path: root.to_path_buf(),
-            id: FileId {
-                dev: meta.dev(),
-                ino: meta.ino(),
-            },
+            id: root_id,
             pending: names.into_iter(),
             agg: Agg::default(),
         }];
@@ -405,17 +432,15 @@ impl<'h> Scanner<'h> {
                     continue;
                 }
                 self.totals.directories += 1;
-                match self.list(&path) {
+                let parent = stack.last().expect("stack is non-empty").id;
+                match self.list(&path, id, Some(parent)) {
                     Ok(names) => stack.push(Frame {
                         path,
                         id,
                         pending: names.into_iter(),
                         agg: Agg::default(),
                     }),
-                    Err(e) => {
-                        let reason = classify(&e);
-                        self.skip(path, reason);
-                    }
+                    Err(reason) => self.skip(path, reason),
                 }
             } else {
                 self.totals.other_entries += 1;
@@ -477,8 +502,21 @@ pub fn scan(opts: ScanOptions) -> ScanReport {
     scan_with_hook(opts, None)
 }
 
-pub fn scan_with_hook(opts: ScanOptions, hook: Option<ListingHook<'_>>) -> ScanReport {
+/// `root` with its parent directories resolved, so the report names the
+/// directory that is actually scanned even when an earlier component is a
+/// symlink. The last component is kept as given: a root that is itself a
+/// symlink is still reported and not followed.
+fn resolve_parents(root: &Path) -> PathBuf {
+    let resolved = match (root.parent(), root.file_name()) {
+        (Some(parent), Some(name)) => fs::canonicalize(parent).map(|p| p.join(name)),
+        _ => fs::canonicalize(root),
+    };
+    resolved.unwrap_or_else(|_| root.to_path_buf())
+}
+
+pub fn scan_with_hook(mut opts: ScanOptions, hook: Option<ListingHook<'_>>) -> ScanReport {
     let started = Instant::now();
+    opts.roots = opts.roots.iter().map(|r| resolve_parents(r)).collect();
     let top = opts.top;
     let mut s = Scanner {
         totals: ScanTotals::default(),
@@ -554,13 +592,15 @@ mod tests {
     #[test]
     fn file_sizes_are_exact_and_allocation_is_reported() {
         let t = tempfile::tempdir().unwrap();
-        write(&t.path().join("a.bin"), 10_000);
-        write(&t.path().join("b.bin"), 1);
-        let r = scan(opts(t.path()));
+        // Reports name the resolved path (/var is a symlink to /private/var).
+        let base = t.path().canonicalize().unwrap();
+        write(&base.join("a.bin"), 10_000);
+        write(&base.join("b.bin"), 1);
+        let r = scan(opts(&base));
         assert_eq!(r.totals.files, 2);
         assert_eq!(r.totals.logical_bytes, 10_001);
         assert!(r.totals.allocated_bytes >= 10_001);
-        assert_eq!(r.top_files[0].path, t.path().join("a.bin"));
+        assert_eq!(r.top_files[0].path, base.join("a.bin"));
         assert_eq!(r.top_files[0].logical_bytes, 10_000);
         assert!(!r.incomplete);
     }
@@ -568,15 +608,17 @@ mod tests {
     #[test]
     fn directories_aggregate_recursively() {
         let t = tempfile::tempdir().unwrap();
-        write(&t.path().join("x/1"), 100);
-        write(&t.path().join("x/y/2"), 200);
-        write(&t.path().join("x/y/z/3"), 300);
-        write(&t.path().join("w/4"), 50);
-        let r = scan(opts(t.path()));
+        // Reports name the resolved path (/var is a symlink to /private/var).
+        let base = t.path().canonicalize().unwrap();
+        write(&base.join("x/1"), 100);
+        write(&base.join("x/y/2"), 200);
+        write(&base.join("x/y/z/3"), 300);
+        write(&base.join("w/4"), 50);
+        let r = scan(opts(&base));
         let get = |rel: &str| {
             r.top_directories
                 .iter()
-                .find(|d| d.path == t.path().join(rel))
+                .find(|d| d.path == base.join(rel))
                 .unwrap()
                 .clone()
         };
@@ -585,7 +627,7 @@ mod tests {
         assert_eq!(get("x/y").logical_bytes, 500);
         assert_eq!(get("x/y/z").logical_bytes, 300);
         assert_eq!(get("w").logical_bytes, 50);
-        assert_eq!(r.top_directories[0].path, t.path());
+        assert_eq!(r.top_directories[0].path, base);
         assert_eq!(r.top_directories[0].logical_bytes, 650);
         assert_eq!(r.totals.directories, 5);
     }
@@ -644,13 +686,48 @@ mod tests {
     }
 
     #[test]
+    fn root_under_a_symlinked_parent_is_reported_by_its_real_path() {
+        let t = tempfile::tempdir().unwrap();
+        let real = t.path().canonicalize().unwrap().join("real");
+        write(&real.join("sub/f"), 10);
+        std::os::unix::fs::symlink(&real, t.path().join("link")).unwrap();
+        let r = scan(opts(&t.path().join("link/sub")));
+        assert_eq!(r.roots, vec![real.join("sub")]);
+        assert_eq!(r.totals.logical_bytes, 10);
+        assert!(!r.incomplete);
+    }
+
+    #[test]
+    fn parent_swapped_for_a_symlink_during_scan_is_not_followed() {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        write(&outside.path().join("sub/private"), 50_000);
+        write(&base.join("d/sub/mine"), 10);
+        let d = base.join("d");
+        let mut hook = |listed: &Path| {
+            if listed == d {
+                // `d/sub` now resolves into another tree with the same shape.
+                fs::rename(&d, base.join("d.old")).unwrap();
+                std::os::unix::fs::symlink(outside.path(), &d).unwrap();
+            }
+        };
+        let r = scan_with_hook(opts(&base), Some(&mut hook));
+        assert_eq!(r.totals.logical_bytes, 0);
+        assert!(r.incomplete);
+        assert!(matches!(r.skipped[0].reason, SkipReason::Changed));
+    }
+
+    #[test]
     fn permission_denied_is_reported_and_scan_continues() {
         let t = tempfile::tempdir().unwrap();
-        write(&t.path().join("locked/secret"), 999);
-        write(&t.path().join("open/visible"), 5);
-        let locked = t.path().join("locked");
+        // Reports name the resolved path (/var is a symlink to /private/var).
+        let base = t.path().canonicalize().unwrap();
+        write(&base.join("locked/secret"), 999);
+        write(&base.join("open/visible"), 5);
+        let locked = base.join("locked");
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
-        let r = scan(opts(t.path()));
+        let r = scan(opts(&base));
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(r.incomplete);
         assert_eq!(r.skipped_total, 1);
@@ -670,17 +747,19 @@ mod tests {
     #[test]
     fn files_disappearing_during_scan_are_reported() {
         let t = tempfile::tempdir().unwrap();
-        write(&t.path().join("d/keep"), 10);
-        write(&t.path().join("d/gone"), 20);
-        write(&t.path().join("d/sub/inner"), 30);
-        let d = t.path().join("d");
+        // Reports name the resolved path (/var is a symlink to /private/var).
+        let base = t.path().canonicalize().unwrap();
+        write(&base.join("d/keep"), 10);
+        write(&base.join("d/gone"), 20);
+        write(&base.join("d/sub/inner"), 30);
+        let d = base.join("d");
         let mut hook = |listed: &Path| {
             if listed == d {
                 fs::remove_file(d.join("gone")).unwrap();
                 fs::remove_dir_all(d.join("sub")).unwrap();
             }
         };
-        let r = scan_with_hook(opts(t.path()), Some(&mut hook));
+        let r = scan_with_hook(opts(&base), Some(&mut hook));
         assert!(r.incomplete);
         assert_eq!(r.skipped_total, 2);
         assert!(
