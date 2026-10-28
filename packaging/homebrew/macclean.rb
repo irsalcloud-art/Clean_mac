@@ -4,8 +4,8 @@
 class Macclean < Formula
   desc "Storage analyzer, safe developer-cache cleaner and system monitor for macOS"
   homepage "https://github.com/irsalcloud-art/Clean_mac"
-  url "https://github.com/irsalcloud-art/Clean_mac/releases/download/v0.1.3/macclean-0.1.3-universal-apple-darwin.tar.gz"
-  sha256 "4ba3947a86cafbe22e2323153e9aa571cdfc46559af565b540b86b4cd2e1a228"
+  url "https://github.com/irsalcloud-art/Clean_mac/releases/download/v0.1.4/macclean-0.1.4-universal-apple-darwin.tar.gz"
+  sha256 "d3bd06fdad62782596ae94e4456eae8eddd15c1fac89e49804a774bd3ed97de8"
   license any_of: ["MIT", "Apache-2.0"]
 
   depends_on macos: :sequoia
