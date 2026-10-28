@@ -13,13 +13,13 @@ Every item is a GitHub issue with a priority label:
 
 Goals map to [milestones](https://github.com/irsalcloud-art/Clean_mac/milestones). The pinned "Roadmap" issue tracks progress live.
 
-## Where we are: v0.1.2 (released 2026-10-28)
+## Where we are: v0.1.3 (released 2026-10-28)
 
-[v0.1.2](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.2) is the latest release, after [v0.1.1](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.1) on 2026-10-27, the first with downloadable binaries. Both ship work from several goals ahead of the version plan below. Each goal stays open until its exit criteria are met.
+[v0.1.3](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.3) is the latest release. It hardens [v0.1.2](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.2) from the same day after an external review, and adds no features. [v0.1.1](https://github.com/irsalcloud-art/Clean_mac/releases/tag/v0.1.1), on 2026-10-27, was the first with downloadable binaries. These releases ship work from several goals ahead of the version plan below. Each goal stays open until its exit criteria are met.
 
 * `status`, `analyze` (with `--max-depth` and `--exclude`; cloud-synced folders skipped by default), `monitor` (with physical footprint and `--tui`), `report`
 * `clean` categories: npm-cache, xcode-derived-data, pip-cache, homebrew-cache, gradle-cache, cocoapods-cache, yarn-cache. The Yarn 2+ global cache and the pnpm store are deliberately not cleaned, because projects use them directly.
-* 121 tests, run in CI on an Apple Silicon and an Intel runner (macOS 15.7) and under Rosetta 2, plus by hand on an Apple M3 (macOS 27.0.1)
+* 126 tests, run in CI on an Apple Silicon and an Intel runner (macOS 15.7) and under Rosetta 2, plus by hand on an Apple M3 (macOS 27.0.1)
 * Release archives for `aarch64`, `x86_64` and universal, with `SHA256SUMS`. Not yet code-signed or notarized ([#7](https://github.com/irsalcloud-art/Clean_mac/issues/7))
 * **Goal 1:** CI runs on every push and pull request on both architectures. Since 2026-10-28 a ruleset on `main` requires a pull request with both CI jobs passing, and blocks force-pushes and deletion; repository admins can bypass it, for example when GitHub cancels the Apple Silicon runner for lack of capacity. #2 was closed on 2026-10-26, after the suite passed on GitHub's native Intel runner and the documented minimum was raised to macOS 15.
 * **Goal 2:** #3, #4, #5, #9 and #10 are implemented and released; the issues stay open until they are reviewed.

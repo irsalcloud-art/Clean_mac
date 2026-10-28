@@ -1,6 +1,6 @@
 [package]
 name = "macclean"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "MacClean: storage analyzer, safe cache cleaner and system monitor for macOS"
 readme = "README.md"

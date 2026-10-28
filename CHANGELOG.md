@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-28
+
+Hardening after an external review: deletion now needs an approved plan at the API level, `analyze` no longer enters a folder swapped for a symlink mid-scan, and CI actions are pinned to commit SHAs. No new cleanup categories.
+
 ### Added
 - Dependabot keeps the pinned GitHub Actions current.
 - MacClean can be installed with Homebrew: `brew install irsalcloud-art/macclean/macclean` installs the universal binary from the new [irsalcloud-art/homebrew-macclean](https://github.com/irsalcloud-art/homebrew-macclean) tap, pinned to its release checksum. Tested on Apple Silicon so far ([#15](https://github.com/irsalcloud-art/Clean_mac/issues/15)).
@@ -69,7 +73,8 @@ First version.
 - `report`: status, cleanup plan and an optional analysis in one report.
 - Text and JSON output for every command, and documented exit codes 0–5.
 
-[Unreleased]: https://github.com/irsalcloud-art/Clean_mac/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/irsalcloud-art/Clean_mac/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/irsalcloud-art/Clean_mac/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/irsalcloud-art/Clean_mac/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/irsalcloud-art/Clean_mac/compare/e7a562c...v0.1.1
 [0.1.0]: https://github.com/irsalcloud-art/Clean_mac/commit/e7a562c
