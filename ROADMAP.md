@@ -19,7 +19,7 @@ Goals map to [milestones](https://github.com/irsalcloud-art/Clean_mac/milestones
 
 * `status`, `analyze` (with `--max-depth` and `--exclude`; cloud-synced folders skipped by default), `monitor` (with physical footprint and `--tui`), `report`
 * `clean` categories: npm-cache, xcode-derived-data, pip-cache, homebrew-cache, gradle-cache, cocoapods-cache, yarn-cache. The Yarn 2+ global cache and the pnpm store are deliberately not cleaned, because projects use them directly.
-* 127 tests, run in CI on an Apple Silicon and an Intel runner (macOS 15.7) and under Rosetta 2, plus by hand on an Apple M3 (macOS 27.0.1)
+* 129 tests, run in CI on an Apple Silicon and an Intel runner (macOS 15.7) and under Rosetta 2, plus by hand on an Apple M3 (macOS 27.0.1)
 * Release archives for `aarch64`, `x86_64` and universal, with `SHA256SUMS`. Not yet code-signed or notarized ([#7](https://github.com/irsalcloud-art/Clean_mac/issues/7))
 
 ### Issue status

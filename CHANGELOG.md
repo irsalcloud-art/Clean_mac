@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+- `analyze` counted a path twice when it was given together with a folder that contains it (for example `analyze ~ ~/Downloads`), inflating totals and listing the same folders more than once. Each path is now counted once; paths already counted inside another are listed separately. A nested path the outer scan did not enter (excluded, cloud-synced or on another filesystem) is still scanned on its own.
+
 ## [0.1.4] - 2026-10-28
 
 Security fix: `clean` could print environment variables, including tokens, when it refused a category because a tool was running. Affects 0.1.2 and 0.1.3; update if you use either.

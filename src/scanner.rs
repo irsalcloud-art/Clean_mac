@@ -175,6 +175,10 @@ pub struct ScanReport {
     /// Cloud-synced folders intentionally not entered (not counted as
     /// incomplete); `--include-cloud` scans them.
     pub cloud_folders_skipped: Vec<PathBuf>,
+    /// Paths given that lie inside another given path and were already
+    /// counted there, so nothing is counted twice.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub roots_already_included: Vec<PathBuf>,
     pub elapsed_ms: u128,
 }
 
@@ -273,6 +277,11 @@ struct Scanner<'h> {
     skipped_total: u64,
     mounts_not_crossed: Vec<PathBuf>,
     cloud_folders_skipped: Vec<PathBuf>,
+    /// Identities of the given roots, and those of them a scan has
+    /// already counted.
+    root_ids: HashSet<FileId>,
+    covered_roots: HashSet<FileId>,
+    roots_already_included: Vec<PathBuf>,
     hook: Option<ListingHook<'h>>,
 }
 
@@ -336,6 +345,17 @@ impl<'h> Scanner<'h> {
         Ok(names)
     }
 
+    /// Records that a given root was reached inside another one.
+    fn mark_if_root(&mut self, meta: &fs::Metadata) {
+        let id = FileId {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        };
+        if self.root_ids.contains(&id) {
+            self.covered_roots.insert(id);
+        }
+    }
+
     fn scan_root(&mut self, root: &Path) {
         let meta = match fs::symlink_metadata(root) {
             Ok(m) => m,
@@ -349,6 +369,14 @@ impl<'h> Scanner<'h> {
         if ft.is_symlink() {
             self.totals.symlinks_not_followed += 1;
             self.skip(root.to_path_buf(), SkipReason::SymlinkRootNotFollowed);
+            return;
+        }
+        let id = FileId {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        };
+        if !self.covered_roots.insert(id) {
+            self.roots_already_included.push(root.to_path_buf());
             return;
         }
         if ft.is_file() {
@@ -408,6 +436,7 @@ impl<'h> Scanner<'h> {
             if ft.is_symlink() {
                 self.totals.symlinks_not_followed += 1;
             } else if ft.is_file() {
+                self.mark_if_root(&meta);
                 if let Some((l, a)) = self.account_file(&path, &meta) {
                     let top = stack.last_mut().expect("stack is non-empty");
                     top.agg.logical += l;
@@ -434,12 +463,15 @@ impl<'h> Scanner<'h> {
                 self.totals.directories += 1;
                 let parent = stack.last().expect("stack is non-empty").id;
                 match self.list(&path, id, Some(parent)) {
-                    Ok(names) => stack.push(Frame {
-                        path,
-                        id,
-                        pending: names.into_iter(),
-                        agg: Agg::default(),
-                    }),
+                    Ok(names) => {
+                        self.mark_if_root(&meta);
+                        stack.push(Frame {
+                            path,
+                            id,
+                            pending: names.into_iter(),
+                            agg: Agg::default(),
+                        })
+                    }
                     Err(reason) => self.skip(path, reason),
                 }
             } else {
@@ -527,10 +559,28 @@ pub fn scan_with_hook(mut opts: ScanOptions, hook: Option<ListingHook<'_>>) -> S
         skipped_total: 0,
         mounts_not_crossed: Vec::new(),
         cloud_folders_skipped: Vec::new(),
+        root_ids: HashSet::new(),
+        covered_roots: HashSet::new(),
+        roots_already_included: Vec::new(),
         hook,
         opts,
     };
-    for root in s.opts.roots.clone() {
+    s.root_ids = s
+        .opts
+        .roots
+        .iter()
+        .filter_map(|r| fs::symlink_metadata(r).ok())
+        .map(|m| FileId {
+            dev: m.dev(),
+            ino: m.ino(),
+        })
+        .collect();
+    // Outer paths first, so a path given inside another one is counted by
+    // the outer scan and then skipped. One that the outer scan did not
+    // enter (excluded, cloud-synced, another filesystem) is still scanned.
+    let mut order = s.opts.roots.clone();
+    order.sort_by_key(|r| r.components().count());
+    for root in order {
         s.scan_root(&root);
     }
 
@@ -543,6 +593,7 @@ pub fn scan_with_hook(mut opts: ScanOptions, hook: Option<ListingHook<'_>>) -> S
         skipped_total,
         mounts_not_crossed,
         cloud_folders_skipped,
+        roots_already_included,
         ..
     } = s;
 
@@ -563,6 +614,7 @@ pub fn scan_with_hook(mut opts: ScanOptions, hook: Option<ListingHook<'_>>) -> S
         skipped,
         mounts_not_crossed,
         cloud_folders_skipped,
+        roots_already_included,
         elapsed_ms: started.elapsed().as_millis(),
     }
 }
@@ -683,6 +735,56 @@ mod tests {
             r.skipped[0].reason,
             SkipReason::SymlinkRootNotFollowed
         ));
+    }
+
+    #[test]
+    fn paths_inside_other_paths_are_counted_once() {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().canonicalize().unwrap();
+        write(&base.join("a/b/f"), 100);
+        write(&base.join("a/g"), 50);
+        let mut o = opts(&base.join("a/b"));
+        // Nested ones first, a repeat, and a file inside another root.
+        o.roots = vec![
+            base.join("a/b"),
+            base.clone(),
+            base.join("a"),
+            base.clone(),
+            base.join("a/g"),
+        ];
+        let r = scan(o);
+        assert_eq!(r.totals.files, 2);
+        assert_eq!(r.totals.logical_bytes, 150);
+        assert_eq!(r.totals.directories, 3);
+        let mut paths: Vec<_> = r.top_directories.iter().map(|d| d.path.clone()).collect();
+        paths.sort();
+        paths.dedup();
+        assert_eq!(paths.len(), r.top_directories.len(), "no directory twice");
+        let mut again = r.roots_already_included.clone();
+        again.sort();
+        let mut expected = vec![
+            base.join("a"),
+            base.join("a/b"),
+            base.join("a/g"),
+            base.clone(),
+        ];
+        expected.sort();
+        assert_eq!(again, expected);
+        assert!(!r.incomplete);
+    }
+
+    #[test]
+    fn a_path_the_outer_scan_leaves_out_is_still_scanned() {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().canonicalize().unwrap();
+        write(&base.join("keep/f"), 10);
+        write(&base.join("node_modules/pkg/f"), 20);
+        let mut o = opts(&base);
+        o.roots = vec![base.clone(), base.join("node_modules")];
+        o.exclude = vec![ExcludePattern::new("node_modules").unwrap()];
+        let r = scan(o);
+        assert_eq!(r.totals.logical_bytes, 30);
+        assert!(r.roots_already_included.is_empty());
     }
 
     #[test]

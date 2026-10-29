@@ -296,6 +296,12 @@ pub fn render_scan(w: &mut dyn Write, r: &ScanReport) -> io::Result<()> {
             writeln!(w, "  {}", p.display())?;
         }
     }
+    if !r.roots_already_included.is_empty() {
+        writeln!(w, "\nAlready counted inside another path given:")?;
+        for p in &r.roots_already_included {
+            writeln!(w, "  {}", p.display())?;
+        }
+    }
     if !r.mounts_not_crossed.is_empty() {
         writeln!(
             w,

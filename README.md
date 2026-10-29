@@ -202,6 +202,7 @@ Notes:
 * `analyze --exclude GLOB` (repeatable) leaves matching entries out: they are not entered and not counted. A pattern without `/` matches a name at any depth (`node_modules`, `*.log`); a pattern with `/` matches the path below each analyzed path (`Library/CloudStorage`), and `*` does not cross `/`. The paths you pass are never excluded. Excluded entries are counted in the summary and do not make the scan "incomplete".
 * **Cloud-synced folders are not entered by default:** `~/Library/CloudStorage` (Google Drive, Dropbox, OneDrive and other apps that use File Provider) and `~/Library/Mobile Documents` (iCloud Drive). They live on the same volume, but listing them waits on the sync app and can make it fetch data. MacClean itself makes no network requests. The output lists the folders it did not enter; they do not make the scan "incomplete". `--include-cloud` scans them anyway, and a cloud folder you pass as a path yourself is always scanned. On the development Mac, `analyze ~ --max-depth 2 --top 20` takes 26 s with a 5.3 MB peak footprint; with `--include-cloud` it was still waiting inside Google Drive after 10 minutes.
 * A path you pass that goes through a symlinked folder is reported by its real location (for example `/tmp/x` as `/private/tmp/x`). A folder replaced by a symlink while it is being scanned is skipped and listed, not entered.
+* Paths that overlap are counted once: with `analyze ~ ~/Downloads`, `~/Downloads` is counted as part of `~` and listed as already counted. A nested path that the outer scan leaves out (excluded, cloud-synced, another filesystem) is scanned on its own.
 * `analyze` with no paths scans **the current directory only**. It never scans the whole disk unless you pass `/` yourself. By default it stays on one filesystem; mount points it did not enter are listed.
 * `monitor --count 0` runs until you press Ctrl-C. With `--format json` and more than one sample, it prints one JSON object per line.
 * `clean` without `--interactive` is always a dry run. `--dry-run` and `--interactive` cannot be combined.
@@ -351,10 +352,10 @@ Filesystem safety is treated as a requirement that blocks a release.
 sh scripts/check.sh
 ```
 
-The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (127 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
+The script runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and a release build. It also builds every installed Apple target. The test suite (129 tests) uses only temporary directories with synthetic files. Destructive tests use a temporary directory as the home directory and check both what was deleted and what must remain. They cover:
 
 * size calculations, directory aggregation, top-N limits, hard links
-* permission failures, files disappearing mid-scan, symlink roots and loops, roots under symlinked folders, folders swapped for symlinks mid-scan
+* permission failures, files disappearing mid-scan, symlink roots and loops, roots under symlinked folders, folders swapped for symlinks mid-scan, overlapping roots
 * dry-run planning never deleting anything, with exact estimates
 * allowlist enforcement, protected and outside-home locations, path traversal, tampered plans
 * symlinks inside candidates, symlinked candidates and roots, ancestors swapped after planning
