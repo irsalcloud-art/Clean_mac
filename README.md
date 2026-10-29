@@ -11,7 +11,7 @@ MacClean is a small command-line tool for macOS with three jobs:
 
 MacClean needs no administrator rights. It never runs `sudo` and never follows symbolic links. It sends no telemetry and makes no network requests. It runs no daemon or helper. It does not "free RAM", kill processes or change system settings. It does not promise to make your Mac faster. It reports what it measured.
 
-## Current status (v0.1.4)
+## Current status (v0.1.5)
 
 | Feature | Status |
 |---|---|
